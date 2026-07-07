@@ -1,0 +1,91 @@
+# MarketPulse — Live NSE Trading Filter
+
+A stock-market dashboard with a **live heatmap** (20 & 200 SMA filter), live indices, and
+live stock prices. Data comes from **Yahoo Finance's free endpoint** — no API key, no paid credits.
+
+## Why a server?
+Browsers block direct requests to Yahoo/NSE (CORS). A tiny local Node server (`server.js`)
+fetches the data server-side, computes the moving averages, and serves the page.
+
+## Run it
+You need Node.js (v18+; v20+ recommended).
+
+```bash
+node server.js
+```
+
+Then open **http://localhost:5173** in your browser.
+
+That's it — no `npm install`, no dependencies (uses Node's built-in `fetch` and `http`).
+
+## What's live
+| Feature | Source | Notes |
+|---|---|---|
+| Trend heatmap | Yahoo `/v8/finance/chart` | 20 & 200 SMA computed on the **selected candle interval** (2m / 5m / 15m / 1h / 1d / 1wk) |
+| Return % per box | Yahoo daily series | Intraday frames = last-bar change; **1 Day** = 1-day change; **1 Week** = rolling 5-trading-day change |
+| Index cards + nav pill | Yahoo (`^NSEI`, `^BSESN`, `^NSEBANK`, `^CNXIT`) | 1-day change |
+| **Chart tools** | lightweight-charts | Every candlestick chart has a drawing toolbar (trend line / horizontal line / freehand, undo/clear, anchored to price+time), a full-screen button, and a moving-average menu (off / presets / custom lengths). The last-price line stretching across the chart is turned off |
+| Stock Info price/levels | Yahoo | Live price, day range, 52-week range, 50/200-day SMA for any NSE symbol |
+| **News** | Google News RSS (free, no key) | Real headlines, searchable per stock, **auto-refreshes every 90s** while the News tab is open |
+| **Delivery % + volume conviction** | NSE daily bhavcopy (`sec_bhavdata_full`) | Per-stock delivery trend + accumulation/distribution read; market-wide **Delivery-Conviction Scanner** on the Flows tab |
+| **FII/DII flows** | NSE `fiidiiTradeReact` | Latest session live; history archives locally and the chart grows day by day |
+| **Bulk & block deals** | NSE archives `bulk.csv`/`block.csv` | Rolling 30-day local archive, Nifty-500 names highlighted |
+| **Results calendar** | NSE board-meeting feed | Official upcoming results dates, Nifty-500 filter |
+| **Earnings reaction tracker** | Yahoo (calendarEvents + visualization API) | Next results date + historical 1-day/5-day post-results moves and EPS surprises |
+| **Peer comparison** | TradingView scanner + Yahoo filings | Valuation/quality/growth vs same-sector Nifty-500 peers, best-in-class starred |
+| **Leadership & Management** | Yahoo `assetProfile.companyOfficers` | Key executives (name, title, age) for any NSE stock, C-suite first, each with a LinkedIn people-search deep-link + Google fallback. Note: no free feed carries verified LinkedIn profile URLs, so these are accurate name+company *search* links, not guessed `/in/` profiles |
+| **Analyst Brief** | All engines, rule-based | Deterministic bull/bear/watch thesis citing real numbers — no LLM, no key |
+| **Portfolio backtest + correlation** | Yahoo split-adjusted closes | 1-year equity curve vs NIFTY, CAGR/vol/Sharpe/max-drawdown, pairwise correlation matrix |
+| **Macro Maps** | World Bank WDI via DBnomics + curated JSON | TradingView-style world choropleth in 4 categories — **Macro** (inflation, lending rate, GDP growth, unemployment, debt/GDP), **Energy** (renewables, crude-oil & gas output, nuclear share, coal), **Metals** (gold production & CB reserves, copper, lithium), **Trade** (oil-import reliance, India-flagged). G20/G7/BRICS+/ASEAN filters, ranked country panel, year slider |
+| **Geopolitical Risk overlay** | `geopoliticalRisk.json` (hand-maintained) | Toggleable layers over the map: chokepoint pins (Hormuz/Malacca/Suez/Bab-el-Mandeb/Panama with status), conflict-zone shading, sanctions hatch. Risk ticker strip + click-through detail cards with curated India market-impact notes. Plus a country search (filter + fly-to), CSV export of the current ranking, and a world-median + India-rank summary |
+| **Position Sizing → Single Trade** | Client-side + Yahoo quote | Risk-based share-quantity calculator: `qty = (capital × risk%) ÷ \|entry − stop\|`. Long/short, live entry price via `/api/quote`, reward-to-risk from an optional target, leverage/invalid-stop warnings. Capital & risk % persist in localStorage |
+| **Position Sizing → Portfolio Allocator** | `/api/possize` (reuses backtest pipeline) | Risk-parity split across 2–8 stocks: inverse-volatility base + correlation penalty (>0.7 trimmed) + optional 0.25× fractional-Kelly conviction tilt + max-position cap. Outputs weight %, ₹ allocation and share qty; Chart.js donut; exports the sized basket into the Portfolio scoring module |
+
+## Refresh behaviour
+- **News** updates automatically (every 90s, only while you're on the News tab).
+- **Heatmap is manual on purpose** — it loads once when you first open the Trend tab, then only re-fetches when you click **↻ Refresh Live Data** or change a Time Frame / Universe pill. Switching tabs does not re-pull it.
+
+## Reading the heatmap
+- 🟢 **Green** — price above **both** 20 & 200 MA (bullish)
+- 🔴 **Red** — price below **both** 20 & 200 MA (bearish)
+- 🟡 **Yellow** — mixed (e.g. above 20 but below 200 — early reversal)
+
+The **LIVE** badge confirms real data. If the badge says **SIMULATED**, the Node server
+isn't reachable and the heatmap is showing demo data — **don't trade on it**.
+
+## Not live (illustrative)
+- **SWOT / PESTLE & fundamentals** (P/E, market cap, revenue mix) — curated for Infosys, TCS,
+  Reliance, HDFC Bank, Wipro. The **price** on those pages is still live.
+- If the Node server is down, News falls back to sample headlines (clearly badged **OFFLINE**).
+
+## Macro Maps granularity (be aware before comparing to TradingView)
+Cross-country data is the **World Bank WDI** dataset, fetched through **DBnomics**
+(`api.db.nomics.world`) rather than `api.worldbank.org` directly — some ISPs (seen on an
+Indian connection) SNI-filter the World Bank host so a direct fetch hangs; DBnomics mirrors
+the identical series from a reachable host. These series are **annual** and publish with a
+lag (the DBnomics snapshot currently ends ~2023) — the Macro page's time slider steps by
+**year**, and every country row shows its own observation year.
+TradingView's Macro Maps show *monthly* prints (e.g. "Mar 2025"), so its numbers will
+differ from the annual averages here — both are correct for what they measure.
+Known gaps surfaced honestly: India's central-govt debt series stops at 2018 (IMF backfill
+planned), the Interest Rate tab is the commercial **lending** rate (policy rates need
+FRED — planned), and Manufacturing PMI has no free cross-country source (tab marked
+"planned"). The India Snapshot strip (RBI repo, CPI/WPI, INR, FII/DII — monthly/daily)
+is the next phase.
+
+**Energy/Metals/Trade tabs** are hand-curated from authoritative public sources (USGS Mineral
+Commodity Summaries, EIA, Energy Institute Statistical Review, World Gold Council/IMF, IAEA)
+because those figures (production tonnes, refining capacity, reserves) have no free
+cross-country JSON API. They live in `macroCurated.json` — single-year snapshots (slider
+fixed), each row tagged with its source + reference year. Edit that file and refresh; no
+server restart needed. The one live World Bank energy series still updated to a recent year
+is "Renewables (% energy)".
+
+**Geopolitical Risk** lives in `geopoliticalRisk.json` — a hand-maintained config (not a live
+feed), so you edit chokepoint statuses, conflict zones, sanctions and India market-impact
+notes yourself and refresh. Each entry has id/name/lat/lng/type/status/flowPercentage/
+lastUpdated/note/marketImpact.
+
+## Tickers
+The universe uses NSE symbols (`.NS`). Occasionally Yahoo drops one (shown as "no data: …");
+that's surfaced explicitly rather than hidden.

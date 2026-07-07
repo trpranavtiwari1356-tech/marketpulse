@@ -1,0 +1,88 @@
+{
+  "_comment": "MarketPulse curated macro/commodity data — HAND-VERIFIED from public authoritative sources (USGS Mineral Commodity Summaries, EIA, Energy Institute Statistical Review, World Gold Council/IMF, IAEA). Figures are ROUNDED and approximate; each indicator carries its source + reference year, shown per-country in the UI as the observation year. These are single-year snapshots (no historical slider) unless noted. Edit values here and refresh the Macro page to update. Countries not listed for an indicator are correctly greyed out (e.g. most countries produce no lithium).",
+  "updated": "2026-07",
+  "indicators": {
+    "oil_prod": {
+      "label": "Crude Oil Production",
+      "unit": " Mb/d",
+      "source": "EIA / OPEC",
+      "year": 2023,
+      "desc": "Crude oil incl. condensate, million barrels per day. Identifies the swing producers whose supply drives the price India (an ~85% importer) pays.",
+      "note": "High producers = global price setters. India is a minor producer (~0.6 Mb/d) and a major importer, so it is a price-taker exposed to the top of this list.",
+      "values": { "USA": 12.9, "RUS": 10.1, "SAU": 9.7, "CAN": 4.6, "IRQ": 4.3, "CHN": 4.2, "IRN": 3.6, "ARE": 3.4, "BRA": 3.4, "KWT": 2.7, "NOR": 1.9, "MEX": 1.9, "KAZ": 1.8, "NGA": 1.4, "QAT": 1.3, "LBY": 1.2, "AGO": 1.1, "DZA": 1.0, "OMN": 1.0, "COL": 0.8, "VEN": 0.8, "GBR": 0.7, "AZE": 0.7, "IDN": 0.6, "IND": 0.6, "EGY": 0.6, "MYS": 0.6 }
+    },
+    "gas_prod": {
+      "label": "Natural Gas Production",
+      "unit": " bcm",
+      "source": "Energy Institute",
+      "year": 2023,
+      "desc": "Marketed natural gas production, billion cubic metres per year.",
+      "note": "LNG-import-dependent economies (incl. India, ~50% of gas demand imported) are exposed to spot LNG price swings set by the balance between these producers and Asian/European demand.",
+      "values": { "USA": 1035, "RUS": 586, "IRN": 252, "CHN": 234, "CAN": 190, "QAT": 181, "AUS": 151, "NOR": 116, "SAU": 114, "DZA": 98, "TKM": 80, "MYS": 74, "EGY": 59, "IDN": 58, "ARE": 57, "UZB": 47, "NGA": 46, "ARG": 39, "OMN": 38, "IND": 34, "GBR": 32, "TTO": 27, "NLD": 16 }
+    },
+    "nuclear_grid": {
+      "label": "Nuclear % of Grid",
+      "unit": "%",
+      "source": "IAEA / Energy Institute",
+      "year": 2023,
+      "desc": "Share of electricity generated from nuclear power. Curated here because World Bank's series froze in 2015.",
+      "note": "High nuclear share = lower exposure to fossil-fuel import shocks. India (~3%) leans on coal + imported crude/gas, so it is more sensitive to energy-price geopolitics.",
+      "values": { "FRA": 65, "SVK": 61, "UKR": 55, "HUN": 45, "FIN": 42, "BEL": 41, "CZE": 40, "BGR": 40, "SVN": 37, "CHE": 32, "KOR": 31, "SWE": 29, "ESP": 20, "ROU": 20, "USA": 18, "RUS": 19, "PAK": 17, "CAN": 13, "GBR": 13, "ARG": 7, "JPN": 6, "CHN": 5, "ZAF": 5, "MEX": 5, "IND": 3, "BRA": 2, "DEU": 0 }
+    },
+    "coal_prod": {
+      "label": "Coal Production",
+      "unit": " Mt",
+      "source": "Energy Institute",
+      "year": 2023,
+      "desc": "Coal production, million tonnes per year.",
+      "note": "India is the world's #2 coal producer AND a large importer of higher-grade coking/thermal coal — relevant to power, metals and cement input costs.",
+      "values": { "CHN": 4640, "IND": 910, "IDN": 775, "USA": 520, "AUS": 440, "RUS": 440, "ZAF": 230, "DEU": 130, "KAZ": 115, "TUR": 100, "POL": 95, "MNG": 90, "COL": 55, "CAN": 45, "VNM": 45, "UKR": 30 }
+    },
+    "gold_prod": {
+      "label": "Gold Production",
+      "unit": " t",
+      "source": "USGS",
+      "year": 2023,
+      "desc": "Mine production of gold, tonnes per year.",
+      "note": "India mines almost no gold (~1.6 t) yet is the world's #2 consumer — its import bill (gold is a top-3 import) directly widens the trade deficit and pressures the rupee when prices rise.",
+      "values": { "CHN": 370, "AUS": 310, "RUS": 310, "CAN": 200, "USA": 170, "KAZ": 130, "MEX": 120, "IDN": 110, "UZB": 110, "ZAF": 100, "GHA": 90, "PER": 90, "BRA": 85, "BFA": 65, "MLI": 65, "PNG": 60, "TZA": 55, "SDN": 50, "COL": 45, "TUR": 40, "ARG": 35, "PHL": 25, "IND": 1.6 }
+    },
+    "gold_reserves": {
+      "label": "CB Gold Reserves",
+      "unit": " t",
+      "source": "WGC / IMF",
+      "year": 2024,
+      "desc": "Official central-bank gold reserves, tonnes.",
+      "note": "The RBI has been steadily raising its gold holdings (~800+ t) as an FX-reserve diversifier away from the US dollar — a slow structural bid under the gold price.",
+      "values": { "USA": 8133, "DEU": 3352, "ITA": 2452, "FRA": 2437, "RUS": 2333, "CHN": 2264, "CHE": 1040, "JPN": 846, "IND": 822, "NLD": 612, "TUR": 570, "TWN": 424, "PRT": 383, "UZB": 375, "POL": 360, "SAU": 323, "GBR": 310, "KAZ": 295, "ESP": 282, "AUT": 280, "THA": 244, "SGP": 230, "BEL": 227 }
+    },
+    "copper_prod": {
+      "label": "Copper Production",
+      "unit": " kt",
+      "source": "USGS",
+      "year": 2023,
+      "desc": "Copper mine production, thousand tonnes of metal content per year.",
+      "note": "Copper is 'Dr. Copper' — a global growth barometer and a key input for Indian power, EV and construction. India imports most refined copper, so global mine supply matters for input cost.",
+      "values": { "CHL": 5000, "PER": 2600, "COD": 2500, "CHN": 1700, "USA": 1100, "RUS": 910, "IDN": 840, "AUS": 810, "ZMB": 760, "MEX": 750, "KAZ": 740, "CAN": 520, "POL": 390, "BRA": 390, "PNG": 170, "IND": 30 }
+    },
+    "lithium_prod": {
+      "label": "Lithium Production",
+      "unit": " t",
+      "source": "USGS",
+      "year": 2023,
+      "desc": "Lithium mine production, tonnes of lithium content per year (excludes US, withheld).",
+      "note": "Lithium is the strategic battery metal. India has near-zero output and is building import/partnership supply chains for its EV and storage ambitions — a structural import dependency.",
+      "values": { "AUS": 86000, "CHL": 44000, "CHN": 33000, "ARG": 9600, "BRA": 4900, "ZWE": 3400, "CAN": 3400, "PRT": 380, "IND": 0 }
+    },
+    "oil_import_dep": {
+      "label": "Oil Import Dependency",
+      "unit": "%",
+      "source": "IEA / EIA (approx.)",
+      "year": 2023,
+      "desc": "Approximate share of oil consumption met by NET imports. Positive = import-dependent; negative = net exporter. Curated ratio, rounded.",
+      "note": "INDIA ~87% — one of the most oil-import-dependent large economies. Every $10/bbl move in crude swings India's annual import bill by roughly $13-15 bn, directly hitting the current-account deficit, the rupee and CPI. This is the single biggest global-macro transmission channel into Indian equities.",
+      "highlight": "IND",
+      "values": { "IND": 87, "JPN": 99, "KOR": 98, "DEU": 98, "FRA": 99, "ITA": 93, "ESP": 99, "TUR": 93, "PHL": 100, "THA": 60, "PAK": 85, "CHN": 72, "IDN": 45, "ZAF": 70, "GBR": 40, "USA": -5, "BRA": 0, "CAN": -60, "MEX": -20, "NOR": -600, "SAU": -300, "RUS": -200, "ARE": -250, "IRQ": -400, "KWT": -350, "NGA": -180 }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+# dependencies (none today — zero-dep — but future-proof)
+node_modules/
+
+# runtime cache — regenerated on the server. Keep constituents.json so the full
+# Nifty-500 universe is available even if NSE blocks the cloud host's IP at boot.
+.cache/*
+!.cache/constituents.json
+
+# local tooling / editor / preview config — not needed in production
+.claude/
+*.log
+.DS_Store
+Thumbs.db
