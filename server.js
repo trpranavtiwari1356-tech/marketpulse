@@ -2986,28 +2986,44 @@ const server = http.createServer(async (req, res) => {
     if (disk.bank && disk.bank.length) BANK_SET = new Set(disk.bank);
     if (disk.it && disk.it.length)     IT_SET   = new Set(disk.it);
   }
-  // 2) refresh the official NSE constituents now, then daily
-  await loadConstituents().catch(() => {});
-  setInterval(() => loadConstituents().catch(() => {}), 24 * 3600e3);
-  // 3) warm the common scans in the background (only actually scans if the disk cache is cold/stale)
+  // 2) refresh the official NSE constituents now, then daily — but only on a full host.
+  //    On cloud (NSE blocks the IP) this fetch just hangs; the committed .cache/constituents.json
+  //    hydrated in step 1 already carries the full Nifty-500 universe, so we skip it.
+  const _light = process.env.RENDER === 'true' || process.env.LIGHT_START === '1';
+  if (!_light) {
+    await loadConstituents().catch(() => {});
+    setInterval(() => loadConstituents().catch(() => {}), 24 * 3600e3);
+  }
+  // 3) warm the common scans in the background (only actually scans if the disk cache is cold/stale).
+  //    LIGHT_START skips the heavy warm burst on constrained/free hosts: Render's 512MB/0.1-CPU
+  //    free tier OOMs (and CPU-starves the health check → restart loop → intermittent 404s) under
+  //    the double Nifty-500 warm-up, and its NSE fetches hang forever (NSE blocks cloud IPs).
+  //    There, every feature simply lazy-loads on first request instead. Render sets RENDER=true
+  //    automatically, so this needs no manual config; a full box is unaffected.
+  const LIGHT_START = process.env.RENDER === 'true' || process.env.LIGHT_START === '1';
   const defCfg = parseMaConfig(null, null);   // default SMA 20/200 on 1 Day
-  topTrend('1 Day', 'Nifty 50', defCfg).catch(() => {});
-  topTrend('1 Day', 'Nifty 500', defCfg).catch(() => {});
-  topMovers('Nifty 50', 'daily').catch(() => {});
-  topExtremes('Nifty 50').catch(() => {});
-  topExtremes('Nifty 500').catch(() => {});
-  topGaps('Nifty 50').catch(() => {});
-  topRS('Nifty 50', '1M').catch(() => {});
-  // 4) warm the pro engines: bhav delivery history (disk-cached per day), FII/DII archive,
-  //    bulk/block deals archive, NSE results calendar — all background, all failure-safe
-  ensureBhavDays(26).then(d => console.log(`Bhavcopy delivery history: ${d.length} trading days ready`)).catch(() => {});
-  fiidiiFlows().catch(() => {});
-  dealsData().catch(() => {});
-  earningsCalendar().catch(() => {});
-  // 5) warm the Macro Maps page (geometry + default tab) — both disk-cached, so this is
-  //    a no-op after the first ever run
-  macroGeo().catch(() => {});
-  macroIndicator('inflation').catch(() => {});
+  if (LIGHT_START) {
+    console.log('LIGHT_START: constrained host detected — skipping heavy warm-up, features load on demand.');
+    topTrend('1 Day', 'Nifty 50', defCfg).catch(() => {});   // one small scan so the Trend tab isn't stone-cold
+  } else {
+    topTrend('1 Day', 'Nifty 50', defCfg).catch(() => {});
+    topTrend('1 Day', 'Nifty 500', defCfg).catch(() => {});
+    topMovers('Nifty 50', 'daily').catch(() => {});
+    topExtremes('Nifty 50').catch(() => {});
+    topExtremes('Nifty 500').catch(() => {});
+    topGaps('Nifty 50').catch(() => {});
+    topRS('Nifty 50', '1M').catch(() => {});
+    // 4) warm the pro engines: bhav delivery history (disk-cached per day), FII/DII archive,
+    //    bulk/block deals archive, NSE results calendar — all background, all failure-safe
+    ensureBhavDays(26).then(d => console.log(`Bhavcopy delivery history: ${d.length} trading days ready`)).catch(() => {});
+    fiidiiFlows().catch(() => {});
+    dealsData().catch(() => {});
+    earningsCalendar().catch(() => {});
+    // 5) warm the Macro Maps page (geometry + default tab) — both disk-cached, so this is
+    //    a no-op after the first ever run
+    macroGeo().catch(() => {});
+    macroIndicator('inflation').catch(() => {});
+  }
 })();
 
 server.listen(PORT, () => console.log(`MarketPulse running → http://localhost:${PORT}`));
