@@ -1,10 +1,14 @@
 # dependencies (none today — zero-dep — but future-proof)
 node_modules/
 
-# runtime cache — regenerated on the server. Keep constituents.json so the full
-# Nifty-500 universe is available even if NSE blocks the cloud host's IP at boot.
+# runtime cache — regenerated on the server. Keep constituents.json (Nifty-500 universe),
+# equitymaster.json (full listed-stock search universe) and segfiled.json (official Nifty-500
+# segment-revenue snapshot from NSE quarterly XBRL) so all three survive on the cloud host,
+# whose IP NSE blocks — the local machine refreshes them and commits.
 .cache/*
 !.cache/constituents.json
+!.cache/equitymaster.json
+!.cache/segfiled.json
 
 # local tooling / editor / preview config — not needed in production
 .claude/

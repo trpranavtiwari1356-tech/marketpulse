@@ -1,0 +1,15 @@
+{
+  "_readme": "Hand-curated revenue splits shown on Stock Info when live feeds can't provide them (no free API publishes segment/geography revenue — only annual reports do). Add a stock: copy the RELIANCE block, use the symbol as the key, take percentages from the annual report's segment note (Ind AS 108), and set fy + source so the site can label provenance. Read fresh on every request — edits appear on page refresh, no server restart needed. products[] = revenue by product/segment, geo[] = revenue by geography; each entry { label, pct }, percentages should roughly sum to 100.",
+  "stocks": {
+    "RELIANCE": {
+      "fy": "FY2025",
+      "source": "annual report (approx.)",
+      "products": [
+        { "label": "Fuels & Petrochemicals (O2C)", "pct": 55 },
+        { "label": "Retail Merchandise", "pct": 22 },
+        { "label": "Jio Digital & Telecom", "pct": 17 },
+        { "label": "Media, Content & New Energy", "pct": 6 }
+      ]
+    }
+  }
+}

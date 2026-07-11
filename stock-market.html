@@ -145,12 +145,16 @@
     font-size: 0.75rem; padding: 4px 10px; border-radius: 20px; white-space: nowrap;
     background: var(--surface2); color: var(--green); border: 1px solid var(--border);
   }
+  /* GOLD pill gets a warm gold tint so the MCX ₹/10g quote stands out from the index pills. */
+  #nav-gold { color: var(--gold); border-color: rgba(201,163,95,.5);
+    background: linear-gradient(180deg, rgba(201,163,95,.12), rgba(201,163,95,.04)); }
+  #nav-gold.tv-clickable:hover { border-color: var(--gold); }
   /* The nav ticker pills are secondary (home page has the full scrolling tape). Drop them
-     progressively so the 9 nav TABS get priority — by ~1180px all pills are gone and every
-     tab fits without scrolling on standard laptops/tablets. */
-  @media (max-width: 1560px){ #nav-gold { display: none; } }
-  @media (max-width: 1400px){ #nav-banknifty { display: none; } }
-  @media (max-width: 1220px){ #nav-nifty { display: none; } }
+     progressively so the 9 nav TABS get priority. GOLD is kept longest (user-requested), so
+     Bank Nifty drops first, then Nifty, and Gold only past ~1220px. */
+  @media (max-width: 1560px){ #nav-banknifty { display: none; } }
+  @media (max-width: 1400px){ #nav-nifty { display: none; } }
+  @media (max-width: 1220px){ #nav-gold { display: none; } }
   /* MOBILE NAV: 9 tabs are ~700px wide — far wider than any phone. Without this the nav
      forced the WHOLE page to ~858px and only 3 tabs were reachable on a 375px screen.
      Fix: the tab strip swipes horizontally like a native app tab bar; page stays 100vw. */
@@ -197,8 +201,9 @@
   /* HOME */
   .hero { text-align: center; padding: 3rem 0 2rem; }
   .hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: .5rem; letter-spacing: -1px; }
-  .hero h1 span { background: linear-gradient(92deg, #8fb4d9, var(--accent) 55%, #4d7fb5);
-    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero h1 span { background: linear-gradient(92deg, #ffe9a8, #f5c542 45%, #d9a520);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 0 22px rgba(245,197,66,.18); }
   .hero p { color: var(--muted); font-size: 1rem; margin-bottom: 2rem; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
   .card {
@@ -220,6 +225,7 @@
   .card.info::before { background: linear-gradient(90deg, #2ea36b, #27865a); }
   .card.sentiment::before { background: linear-gradient(90deg, #9d8ec4, #6f5da8); }
   .card.portfolio::before { background: linear-gradient(90deg, #4da3ab, #3a6ea5); }
+  .card.flows::before { background: linear-gradient(90deg, #cf8a5a, #b06a3c); }
   .card:hover { border-color: var(--accent); transform: translateY(-4px); box-shadow: 0 8px 30px rgba(107,155,209,.15); }
   .card-icon { font-size: 2.5rem; margin-bottom: 1rem; }
   .card h3 { font-size: 1.2rem; font-weight: 700; margin-bottom: .5rem; }
@@ -290,6 +296,14 @@
   .dl-btn .ico { width: 15px; height: 15px; }
   .constituents-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 .75rem; }
   .constituents-head h4 { margin: 0; font-size: .85rem; color: var(--muted); font-weight: 600; }
+  /* constituents pager (15-per-page) */
+  .idx-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: .8rem; flex-wrap: wrap; }
+  .idx-pg-btn { background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: .4rem .9rem; font-size: .8rem; font-weight: 600; cursor: pointer;
+    transition: border-color .15s, background .15s; }
+  .idx-pg-btn:hover:not(:disabled) { border-color: var(--accent); }
+  .idx-pg-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .idx-pager-info { font-size: .76rem; color: var(--muted); font-weight: 600; min-width: 190px; text-align: center; }
 
   /* CONTROLS */
   .controls { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; align-items: flex-end; }
@@ -816,6 +830,8 @@
   .fx-checks li.no { color: var(--muted); }
   .fx-checks li.ok::before { content: '✓'; color: var(--green); position: absolute; left: 0; font-weight: 800; }
   .fx-checks li.no::before { content: '✗'; color: var(--red);   position: absolute; left: 0; font-weight: 800; }
+  .fx-checks li.na { color: var(--muted); opacity: .65; }
+  .fx-checks li.na::before { content: '·'; color: var(--muted); position: absolute; left: 0; font-weight: 800; }
   .fx-gaugebar { position: relative; height: 8px; border-radius: 5px; margin: .8rem 0 .35rem;
     background: linear-gradient(90deg, var(--red) 0%, var(--red) 14%, var(--yellow) 14%, var(--yellow) 33%, var(--green) 33%, var(--green) 100%); }
   .fx-gaugemark { position: absolute; top: -3px; width: 3px; height: 14px; background: #fff; border-radius: 2px; box-shadow: 0 0 3px #000; transform: translateX(-50%); }
@@ -1117,6 +1133,12 @@
   .breadth-regime { font-size: .78rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; border: 1.5px solid; border-radius: 8px; padding: .22rem .6rem; }
   .breadth-big { font-size: 1.5rem; font-weight: 800; }
   .breadth-big small { font-size: .72rem; color: var(--muted); font-weight: 500; margin-left: 4px; }
+  .breadth-uni { margin-left: auto; font-size: .68rem; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 6px; padding: .16rem .5rem; }
+  .breadth-uni.quick { color: var(--gold); border-color: rgba(201,163,95,.45); }
+  .breadth-warm { display: flex; align-items: flex-start; gap: 4px; padding: .3rem 0; }
+  .breadth-warm b { font-size: .9rem; }
   .breadth-bar { position: relative; height: 10px; border-radius: 5px; overflow: visible; background: linear-gradient(90deg, var(--red) 0%, #b3813f 40%, var(--gold) 50%, #4f9163 60%, var(--green) 100%); opacity: .95; }
   .breadth-marker { position: absolute; top: -3px; width: 4px; height: 16px; background: #fff; border-radius: 2px; transform: translateX(-2px); box-shadow: 0 0 6px rgba(0,0,0,.7); }
   .breadth-scale { display: flex; justify-content: space-between; font-size: .64rem; color: var(--muted); margin-top: .35rem; }
@@ -1595,7 +1617,7 @@
   <div class="market-pills" id="nav-pills">
     <div class="market-pill tv-clickable" id="nav-nifty" onclick="openTvChart('nav-nifty')" title="Open candlestick chart">● NIFTY <span class="ds-meta">…</span></div>
     <div class="market-pill tv-clickable" id="nav-banknifty" onclick="openTvChart('nav-banknifty')" title="Open candlestick chart">● BANKNIFTY <span class="ds-meta">…</span></div>
-    <div class="market-pill tv-clickable" id="nav-gold" onclick="openTvChart('nav-gold')" title="Open candlestick chart">● GOLD <span class="ds-meta">…</span></div>
+    <div class="market-pill tv-clickable" id="nav-gold" onclick="openTvChart('nav-gold')" title="Indicative ₹/10g domestic gold (COMEX × USD/INR + duty) — reference only, not the live MCX tick. Click for chart.">● GOLD <span class="ds-meta">…</span></div>
   </div>
 </nav>
 
@@ -1641,8 +1663,10 @@
       <div id="pulse-brief"><div class="swot-loading">Composing today's briefing…</div></div>
     </div>
     <div class="pulse-card">
-      <div class="pulse-head"><h3><svg class="ico"><use href="#i-gauge"/></svg> Market Breadth</h3><span class="pulse-asof">Nifty 500 · 200-DMA regime</span></div>
-      <div id="pulse-breadth"><div class="swot-loading">Reading the Nifty 500 scan…</div></div>
+      <div class="pulse-head"><h3><svg class="ico"><use href="#i-gauge"/></svg> Market Breadth</h3>
+        <button class="pulse-refresh" title="Refresh breadth (re-scan)" onclick="loadBreadth(true, this)">↻</button>
+        <span class="pulse-asof">200-DMA regime</span></div>
+      <div id="pulse-breadth"><div class="swot-loading">Reading the market scan…</div></div>
     </div>
   </div>
 
@@ -1668,6 +1692,7 @@
       <button class="btn-primary" onclick="watchAddFromInput()">+ Add</button>
     </div></div>
     <div id="watch-rows"></div>
+    <div style="font-size:.68rem;color:var(--muted);margin-top:.5rem">Prices &amp; day % via the TradingView scanner (matches your charts) — may differ a few paise from the Yahoo-sourced index cards above.</div>
   </div>
 
   <!-- Feature Cards -->
@@ -3055,7 +3080,7 @@ function renderBigBox(s, tf) {
       <div class="big-head">
         <div>
           <div class="big-sym">${s.sym}</div>
-          <div class="big-name">${s.name}${s.sector ? ' · ' + s.sector : ''} · ${(s.maType||'sma').toUpperCase()} · ${tf} candles</div>
+          <div class="big-name">${esc(s.name)}${s.sector ? ' · ' + esc(s.sector) : ''} · ${(s.maType||'sma').toUpperCase()} · ${tf} candles</div>
         </div>
         <div class="big-price">
           <div class="bp-val">${s.price != null ? inr(s.price) : '—'}</div>
@@ -3252,7 +3277,7 @@ function renderSectorBreadth() {
     const cls = s.breadth >= 60 ? 'bull' : s.breadth <= 40 ? 'bear' : 'neutral';
     const rc = s.avgRet >= 0 ? 'up' : 'dn';
     return `<div class="sector-tile ${cls}">
-      <div class="sector-name">${s.name}</div>
+      <div class="sector-name">${esc(s.name)}</div>
       <div class="sector-sub">${s.n} stock${s.n>1?'s':''} · ${s.bull} bullish / ${s.bear} bearish</div>
       <div class="breadth-bar"><div class="breadth-fill" style="width:${s.breadth}%"></div></div>
       <div class="sector-stats"><span>${s.breadth}% bullish</span><span class="${rc}">avg ${s.avgRet>0?'+':''}${s.avgRet.toFixed(2)}%</span></div>
@@ -3262,22 +3287,32 @@ function renderSectorBreadth() {
   if (sc) sc.textContent = `${sectors.length} sectors · ${currentStocks.length} stocks`;
 }
 
-// ───── NSE market status (Mon–Fri 09:15–15:30 IST) ─────
+// ───── NSE market status (Mon–Fri 09:15–15:30 IST, excluding trading holidays) ─────
+// NSE equity trading holidays 2026 (weekday closures only — weekends are already handled by the
+// day-of-week test). Cross-checked against the NSE 2026 calendar; update this list each year.
+const NSE_HOLIDAYS = new Set([
+  '2026-01-15', '2026-01-26', '2026-03-03', '2026-03-26', '2026-03-31', '2026-04-03',
+  '2026-04-14', '2026-05-01', '2026-05-28', '2026-06-26', '2026-09-14', '2026-10-02',
+  '2026-10-20', '2026-11-10', '2026-11-24', '2026-12-25',
+]);
 function marketStatus() {
   const ist = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
   const day = ist.getDay();                       // 0 Sun … 6 Sat
   const mins = ist.getHours() * 60 + ist.getMinutes();
-  const open = day >= 1 && day <= 5 && mins >= 555 && mins <= 930; // 9:15–15:30
-  return { open, ist };
+  const ymd = `${ist.getFullYear()}-${String(ist.getMonth() + 1).padStart(2, '0')}-${String(ist.getDate()).padStart(2, '0')}`;
+  const holiday = NSE_HOLIDAYS.has(ymd);
+  const open = !holiday && day >= 1 && day <= 5 && mins >= 555 && mins <= 930; // 9:15–15:30, non-holiday
+  return { open, ist, holiday };
 }
 function renderMarketStatus() {
-  const { open, ist } = marketStatus();
+  const { open, ist, holiday } = marketStatus();
   const t = ist.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const label = open ? `● NSE OPEN · ${t} IST` : holiday ? `● NSE HOLIDAY · ${t} IST` : `● NSE CLOSED · ${t} IST`;
   for (const id of ['market-status', 'home-mkt']) {
     const el = document.getElementById(id);
     if (!el) continue;
     el.className = 'mkt-badge ' + (open ? 'mkt-open' : 'mkt-closed');
-    el.textContent = open ? `● NSE OPEN · ${t} IST` : `● NSE CLOSED · ${t} IST`;
+    el.textContent = label;
   }
 }
 
@@ -3325,7 +3360,7 @@ function buildTip(s) {
     return `<div class="tip-row"><span class="tip-k">${maLabel(m)}</span><span class="tip-v ${cl}">${txt} ${maChev(m)}${dist}${val}</span></div>`;
   };
   t.innerHTML = `
-    <div class="tip-head">${s.name}<span class="tip-sym">${s.sym}</span></div>
+    <div class="tip-head">${esc(s.name)}<span class="tip-sym">${esc(s.sym)}</span></div>
     <div class="tip-price">${s.price != null ? inr(s.price) : '—'}
       <span class="tip-chg ${up?'pos':'neg'}">${s.ret>0?'+':''}${s.ret}%</span></div>
     <div class="tip-divider"></div>
@@ -3437,7 +3472,7 @@ function moverRow(rank, s, retVal, retSuffix) {
   const sign = up ? '+' : '';
   return `<div class="mover-row">
     <span class="mv-rank">${rank}</span>
-    <span class="mv-sub"><span class="mv-sym">${s.sym}</span><span class="mv-name">${s.name || ''}</span></span>
+    <span class="mv-sub"><span class="mv-sym">${esc(s.sym)}</span><span class="mv-name">${esc(s.name || '')}</span></span>
     <span class="mv-price">${fmtInr(s.price)}</span>
     <span class="mv-ret ${cls}">${sign}${retVal.toFixed(2)}${retSuffix}</span>
   </div>`;
@@ -3478,7 +3513,7 @@ function extremeRow(rank, s, type) {
   }
   return `<div class="mover-row">
     <span class="mv-rank">${rank}</span>
-    <span class="mv-sub"><span class="mv-sym">${s.sym}</span><span class="mv-name">${s.name || ''}</span></span>
+    <span class="mv-sub"><span class="mv-sym">${esc(s.sym)}</span><span class="mv-name">${esc(s.name || '')}</span></span>
     <span class="mv-price">${fmtInr(s.price)}</span>
     <span class="mv-ret ${cls}">${label}</span>
   </div>`;
@@ -3518,7 +3553,7 @@ function gapRow(rank, s) {
   const title = `Prev close ${fmtInr(s.prevClose)} → open ${fmtInr(s.open)} · now ${fmtInr(s.price)} (day ${s.dayChg > 0 ? '+' : ''}${s.dayChg}%)`;
   return `<div class="mover-row" title="${title}">
     <span class="mv-rank">${rank}</span>
-    <span class="mv-sub"><span class="mv-sym">${s.sym}</span><span class="mv-name">${s.name || ''}${tag}</span></span>
+    <span class="mv-sub"><span class="mv-sym">${esc(s.sym)}</span><span class="mv-name">${esc(s.name || '')}${tag}</span></span>
     <span class="mv-price">${fmtInr(s.price)}</span>
     <span class="mv-ret ${cls}">${sign}${s.gap.toFixed(2)}%</span>
   </div>`;
@@ -3555,7 +3590,7 @@ function rsRow(rank, s) {
   const title = `${s.sym} ${s.ret > 0 ? '+' : ''}${s.ret}% vs NIFTY over the period · RS rating ${s.rs}/99`;
   return `<div class="mover-row" title="${title}">
     <span class="mv-rank">${rank}</span>
-    <span class="mv-sub"><span class="mv-sym">${s.sym}</span><span class="mv-name">${s.name || ''} <span class="rs-badge ${rateCls}">RS ${s.rs}</span></span></span>
+    <span class="mv-sub"><span class="mv-sym">${esc(s.sym)}</span><span class="mv-name">${esc(s.name || '')} <span class="rs-badge ${rateCls}">RS ${s.rs}</span></span></span>
     <span class="mv-price">${fmtInr(s.price)}</span>
     <span class="mv-ret ${cls}">${sign}${s.rel.toFixed(2)}%</span>
   </div>`;
@@ -3630,7 +3665,7 @@ function renderSectorChart() {
 // ═══════════════════════ NEWS ═══════════════════════
 // ───── LIVE news (Google News RSS via /api/news), auto-updating ─────
 let newsQuery = '', newsDebounce = null;
-function esc(s){ return String(s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }   // includes ' — esc() output goes inside single-quoted onclick attrs
 // professional price formatting — always two decimals, Indian digit grouping (₹1,342.10)
 function fmtInr(n){ return '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 // monochrome stroke icon from the sprite (replaces emojis) — optional inline style string
@@ -3722,7 +3757,18 @@ async function loadStockByName(name) {
   document.getElementById('stock-input').value = name;
   const key = name.toLowerCase().trim();
   const curated = STOCK_DB[key];
-  const ticker = NAME_TO_TICKER[key] || (curated ? curated.symbol : key.toUpperCase().replace(/\s+/g,''));
+  // resolve free-text names against the FULL listed universe (same list the autocomplete uses),
+  // so "mazagon dock" → MAZDOCK rather than a naive space-stripped guess that fails
+  let ticker = NAME_TO_TICKER[key] || (curated ? curated.symbol : null);
+  if (!ticker) {
+    const up = key.toUpperCase().replace(/\s+/g, '');
+    const hit = SYMBOLS.find(s => s.sym === up)
+      || SYMBOLS.find(s => s.name.toLowerCase() === key)
+      || (key.length >= 3 ? SYMBOLS.find(s => s.name.toLowerCase().includes(key)) : null)
+      || SYMBOLS.find(s => s.sym.startsWith(up))
+      || (key.length >= 5 ? fuzzyStock(key) : null);   // last resort: survives typos on EITHER side (NSE's own list spells "Mazagoan")
+    ticker = hit ? hit.sym : up;
+  }
   const box = document.getElementById('stock-result');
   box.innerHTML = `<div class="placeholder"><div class="spin-ring"></div><p>Fetching live data for ${name}…</p></div>`;
 
@@ -3742,21 +3788,45 @@ async function loadStockByName(name) {
   box.innerHTML = `
     <div class="placeholder">
       <div class="icon">${ic('warn')}</div>
-      <p>No data for "<b>${name}</b>". For full SWOT/PESTLE try: <b>Infosys, TCS, Reliance, HDFC Bank, Wipro</b>.<br>
-      For live price of any NSE stock, enter its exact NSE symbol (e.g. <b>SBIN</b>, <b>ITC</b>, <b>TATASTEEL</b>).</p>
+      <p>No data for "<b>${esc(name)}</b>". Every NSE-listed stock works here — try the company name (e.g. <b>Infosys</b>)
+      or its exact NSE symbol (e.g. <b>SBIN</b>, <b>ITC</b>, <b>TATASTEEL</b>), and pick from the suggestions as you type.</p>
     </div>`;
 }
 
-// live price + technical levels for any NSE symbol without a curated profile
+// Fuzzy name match by QUERY-BIGRAM COVERAGE (what share of the query's character pairs
+// appear in the name) — catches typo'd queries AND typo'd upstream names (NSE's official
+// list spells "Mazagoan Dock"). Symmetric Dice fails here because a short query vs a long
+// legal name ("… Shipbuilders Ltd.") is length-penalised. Only used when exact / substring /
+// prefix lookups all miss; accepts only a confident (≥0.75) match, shorter name wins ties.
+function fuzzyStock(query) {
+  const bigrams = t => { const s = t.toLowerCase().replace(/[^a-z0-9]/g, ''); const out = new Map();
+    for (let i = 0; i < s.length - 1; i++) { const b = s.slice(i, i + 2); out.set(b, (out.get(b) || 0) + 1); } return out; };
+  const qb = bigrams(query); let qn = 0; qb.forEach(v => qn += v);
+  if (!qn) return null;
+  let best = null, bestScore = 0, bestLen = Infinity;
+  for (const s of SYMBOLS) {
+    const nb = bigrams(s.name); let shared = 0;
+    qb.forEach((v, b) => { if (nb.has(b)) shared += Math.min(v, nb.get(b)); });
+    const score = shared / qn;
+    if (score > bestScore || (score === bestScore && s.name.length < bestLen)) {
+      bestScore = score; best = s; bestLen = s.name.length;
+    }
+  }
+  return bestScore >= 0.75 ? best : null;
+}
+
+// live price + technical levels for any NSE symbol without a curated profile.
+// The About section + PESTLE fill in from /api/profile (live Yahoo business summary for
+// EVERY listed symbol) — no more "profiles only curated for 5 stocks" gap.
 function renderLiveOnly(name, ticker, live, ratioData) {
   const up = live.pct >= 0;
   const fmt = n => n != null ? '₹' + Number(n).toLocaleString('en-IN') : '—';
   document.getElementById('stock-result').innerHTML = `
     <div class="stock-header">
-      <div class="stock-logo" style="background:#1e2530">${(name[0]||'?').toUpperCase()}</div>
+      <div class="stock-logo" style="background:${execHue(ticker)}">${esc((name[0]||'?').toUpperCase())}</div>
       <div class="stock-title">
-        <h2>${ticker.replace('.NS','')} ${starBtn(ticker.replace('.NS',''))} <span class="ds-badge ds-live" style="vertical-align:middle">● LIVE</span></h2>
-        <p>${live.symbol} · NSE · live price (no curated profile available)</p>
+        <h2 id="live-title">${esc(ticker.replace('.NS',''))} ${starBtn(ticker.replace('.NS',''))} <span class="ds-badge ds-live" style="vertical-align:middle">● LIVE</span></h2>
+        <p id="live-tagline">${esc(live.symbol)} · NSE · fetching company profile…</p>
       </div>
       <div class="stock-price">
         <div class="price">${fmt(live.price)}</div>
@@ -3771,26 +3841,395 @@ function renderLiveOnly(name, ticker, live, ratioData) {
       <div class="info-box"><h4>50-Day SMA</h4><p>${fmt(live.sma50)}</p><small>${live.sma50!=null && live.price>=live.sma50?'Price ABOVE':'Price BELOW'} 50-SMA</small></div>
       <div class="info-box"><h4>200-Day SMA</h4><p>${fmt(live.sma200)}</p><small>${live.sma200!=null && live.price>=live.sma200?'Price ABOVE':'Price BELOW'} 200-SMA</small></div>
     </div>
-    <div class="desc-box">
+    <div class="desc-box" id="about-live">
       <h3>${ic('doc')} About this company</h3>
-      <p>A curated plain-English profile and PESTLE breakdown isn't available for this symbol yet — the figures above are <b>live from Yahoo Finance</b>, and a <b>live SWOT</b> is shown below. Full qualitative profiles are curated for Infosys, TCS, Reliance, HDFC Bank and Wipro.</p>
+      <p style="color:var(--muted)">Loading the live company profile…</p>
     </div>
+    <div id="management-live" style="margin-bottom:1.2rem"></div>
+    <div id="revenue-live" style="margin-bottom:1.2rem"></div>
+    <div id="contracts-live" style="margin-bottom:1.2rem"></div>
     <div class="candle-wrap">
-      <div class="candle-head"><h4>PRICE CHART — ${ticker.replace('.NS','')} (1 Day)</h4><div class="candle-legend" id="cl-info"></div></div>
+      <div class="candle-head"><h4>PRICE CHART — ${esc(ticker.replace('.NS',''))} (1 Day)</h4><div class="candle-legend" id="cl-info"></div></div>
       <div class="candle-box" id="chart-info"></div>
     </div>
     <div id="thesis-live" style="margin-bottom:1.2rem"></div>
     <div id="delivery-live" style="margin-bottom:1.2rem"></div>
     ${ratioTableHtml(ratioData)}
     ${forensicsHtml(ratioData)}
-    <div id="management-live" style="margin-bottom:1.2rem"></div>
     <div id="peers-live" style="margin-bottom:1.2rem"></div>
     <div id="earnings-live" style="margin-bottom:1.2rem"></div>
-    <div id="swot-live" style="margin:1.5rem 0"></div>`;
+    <div id="swot-live" style="margin:1.5rem 0"></div>
+    <div id="pestle-live" style="margin:1.5rem 0"></div>`;
   renderCandles('chart-info', 'cl-info', ticker.replace('.NS',''), '1 Day');
   const liveSym = (live.symbol || ticker).replace('.NS','');
-  loadSwot(liveSym);              // live SWOT for any NSE symbol
-  loadProPanels(liveSym);         // analyst brief + delivery + earnings + peers
+  loadAboutProfile(liveSym, live);   // live About + facts + revenue trend + footprint + contracts + PESTLE
+  loadSwot(liveSym);                 // live SWOT for any NSE symbol
+  loadProPanels(liveSym);            // analyst brief + delivery + earnings + peers
+}
+
+// ── live "About this company" + sector-level PESTLE (works for EVERY listed symbol) ──
+function mcapFmt(v) {           // INR → "₹1,23,456 Cr"
+  return v != null ? '₹' + Math.round(v / 1e7).toLocaleString('en-IN') + ' Cr' : null;
+}
+// Rule-based narrative paragraph composed from LIVE numbers (mcap bucket, filings growth,
+// 52-week position, ownership stats) — extends Yahoo's summary toward a fuller company
+// write-up while keeping every sentence traceable to a real data point.
+function companyNarrative(j, live) {
+  const out = [];
+  if (j.marketCap) {
+    const cr = j.marketCap / 1e7;
+    const bucket = cr >= 50000 ? 'large-cap' : cr >= 16000 ? 'mid-cap' : 'small-cap';
+    out.push(`${j.name || j.sym} trades on the NSE with a market capitalisation of ${mcapFmt(j.marketCap)}, placing it broadly in ${bucket} territory.`);
+  }
+  if (j.revenueSeries && j.revenueSeries.length >= 2) {
+    const rs = j.revenueSeries, f = rs[0], l = rs[rs.length - 1];
+    const inr = !j.fCurrency || j.fCurrency === 'INR';
+    if (f.revenue > 0 && l.revenue > 0) {
+      const yrs = l.fy - f.fy;
+      const cagr = yrs > 0 ? (Math.pow(l.revenue / f.revenue, 1 / yrs) - 1) * 100 : null;
+      out.push(`Reported revenue ${l.revenue >= f.revenue ? 'grew' : 'declined'} from ${inr ? '₹' + Math.round(f.revenue / 1e7).toLocaleString('en-IN') + ' Cr' : f.revenue.toLocaleString()} in FY${f.fy} to ${inr ? '₹' + Math.round(l.revenue / 1e7).toLocaleString('en-IN') + ' Cr' : l.revenue.toLocaleString()} in FY${l.fy}${cagr != null && isFinite(cagr) ? ` (≈${cagr.toFixed(1)}% a year)` : ''}.`);
+    }
+    if (l.netIncome != null && l.revenue > 0) {
+      const m = l.netIncome / l.revenue * 100;
+      out.push(l.netIncome >= 0
+        ? `The latest reported net profit margin is ${m.toFixed(1)}%.`
+        : `The company reported a net loss in FY${l.fy}.`);
+    }
+  }
+  if (j.employees) out.push(`It employs about ${Number(j.employees).toLocaleString('en-IN')} people${j.hq ? `, headquartered in ${j.hq}` : ''}.`);
+  else if (j.hq) out.push(`The company is headquartered in ${j.hq}.`);
+  if (live && live.price != null && j.week52High && j.week52Low && j.week52High > j.week52Low) {
+    const pos = Math.round((live.price - j.week52Low) / (j.week52High - j.week52Low) * 100);
+    out.push(`The stock currently trades ${pos >= 50 ? 'in the upper' : 'in the lower'} half of its 52-week range (${pos}% of the way from the low to the high).`);
+  }
+  if (j.beta != null) out.push(`A 5-year beta of ${j.beta} means it has historically ${j.beta > 1.15 ? 'amplified' : j.beta < 0.85 ? 'damped' : 'roughly tracked'} broad-market moves.`);
+  if (j.divYield != null && j.divYield > 0) out.push(`It pays a dividend yielding about ${j.divYield}% at the current price.`);
+  return out.join(' ');
+}
+async function loadAboutProfile(sym, live) {
+  const el = document.getElementById('about-live');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/profile?sym=' + encodeURIComponent(sym));
+    const j = await r.json();
+    if (!r.ok || j.error || (!j.description && !j.industry && !j.marketCap)) throw new Error((j && j.error) || 'no profile');
+    // header tagline upgrades from "fetching…" to the real name · industry
+    const tag = document.getElementById('live-tagline');
+    if (tag) tag.textContent = `${j.name || sym} · ${[j.industry, j.sectorYh].filter(Boolean).join(' · ') || 'NSE'}`;
+    // "what the company does, in short" = the summary's first sentence
+    const desc = j.description || '';
+    const firstDot = desc.indexOf('. ');
+    const shortLine = firstDot > 20 ? desc.slice(0, firstDot + 1) : desc.slice(0, 220);
+    const narrative = companyNarrative(j, live);
+    const facts = [
+      j.industry   ? ['Industry', j.industry] : null,
+      j.sectorYh   ? ['Sector', j.sectorYh] : null,
+      j.employees  ? ['Employees', Number(j.employees).toLocaleString('en-IN')] : null,
+      j.hq         ? ['Headquarters', j.hq] : null,
+      j.marketCap  ? ['Market cap', mcapFmt(j.marketCap)] : null,
+      j.beta != null ? ['Beta (5y)', j.beta] : null,
+      j.divYield != null ? ['Dividend yield', j.divYield + '%'] : null,
+    ].filter(Boolean);
+    const factHtml = facts.length ? `<div class="info-grid" style="margin-top:.9rem">${facts.map(([k, v]) =>
+      `<div class="info-box"><h4>${esc(k)}</h4><p style="font-size:.95rem">${esc(v)}</p></div>`).join('')}</div>` : '';
+    const site = j.website ? `<a href="${esc(j.website)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">${esc(j.website.replace(/^https?:\/\/(www\.)?/, ''))} ↗</a>` : '';
+    el.innerHTML = `
+      <h3>${ic('doc')} About this company <span class="ds-badge ds-live" style="vertical-align:middle">● LIVE · Yahoo Finance</span></h3>
+      ${shortLine ? `<p style="font-size:1.02rem;font-weight:600;margin-bottom:.6rem">${esc(shortLine)}</p>` : ''}
+      ${desc ? `<p>${esc(firstDot > 20 ? desc.slice(firstDot + 2) : desc)}</p>` : `<p style="color:var(--muted)">No business summary published for this symbol.</p>`}
+      ${narrative ? `<p style="margin-top:.6rem">${esc(narrative)}</p>
+        <div style="font-size:.68rem;color:var(--muted);margin-top:.35rem">Second paragraph composed live from Yahoo Finance market data and reported filings — every figure is real and current.</div>` : ''}
+      ${site ? `<p style="margin-top:.5rem">${site}</p>` : ''}
+      ${factHtml}`;
+    renderRevenueSection(j);
+    loadContractsNews(sym, j.name || sym);
+    renderSectorPestle(j.sectorYh, j.name || sym);
+  } catch (e) {
+    el.innerHTML = `
+      <h3>${ic('doc')} About this company</h3>
+      <p style="color:var(--muted)">The live company profile isn't available for this symbol right now (${esc(e.message || 'error')}) —
+      <a href="#" style="color:var(--gold)" onclick="loadAboutProfile('${esc(sym)}');return false">retry</a>. The panels below still load normally.</p>`;
+    renderRevenueSection(null);
+    loadContractsNews(sym, sym);
+    renderSectorPestle(null, sym);
+  }
+}
+
+// ── Revenue & profitability trend (reported filings) + revenue-by-product + footprint ──
+// Product/geography splits use a THREE-TIER fallback, most-accurate-first:
+//   1. curated % split from segmentCurated.json (annual-report figures, "● CURATED" badge)
+//   2. segment NAMES the company states in its own profile ("● LIVE" chips, no invented %)
+//   3. honest note + deep link to the official segment note (NSE annual reports)
+let _revChart = null, _segChart = null, _geoChart = null;
+const SEG_COLORS = ['#4f9cf9', '#2ea36b', '#c9a35f', '#9f7aea', '#d0605a', '#38b2ac', '#e2b93b', '#7f8ea3'];
+function segDonut(canvasId, rows) {   // rows: [{label, pct}]
+  return new Chart(document.getElementById(canvasId), {
+    type: 'doughnut',
+    data: { labels: rows.map(r => r.label), datasets: [{ data: rows.map(r => r.pct),
+      backgroundColor: rows.map((_, i) => SEG_COLORS[i % SEG_COLORS.length]), borderWidth: 1, borderColor: '#11151c' }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '58%',
+      plugins: { legend: { position: 'right', labels: { color: '#98a4b3', font: { size: 10 }, boxWidth: 10 } },
+        tooltip: { callbacks: { label: c => c.label + ': ' + c.raw + '%' } } } }
+  });
+}
+function nseAnnualReportLink(sym) {
+  return `<a href="https://www.nseindia.com/companies-listing/corporate-filings-annual-reports?symbol=${encodeURIComponent(sym)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">official segment note → NSE annual reports ↗</a>`;
+}
+function renderRevenueSection(j) {
+  const el = document.getElementById('revenue-live');
+  if (!el) return;
+  const sym = (j && j.sym) || '';
+  const rs = j && j.revenueSeries;
+  const inr = j && (!j.fCurrency || j.fCurrency === 'INR');
+  const cur = (j && j.curated) || null;
+  const curatedBadge = cur ? `<span class="ds-badge ds-sim">● CURATED · ${esc(cur.fy || '')} · ${esc(cur.source || 'annual report')}</span>` : '';
+
+  // — revenue BY PRODUCT / SEGMENT —
+  // Tier order, most-authoritative first:
+  //   FILED (official NSE quarterly segment report) → CURATED (annual-report %) →
+  //   stated segment NAMES (profile text) → single-segment (from the filing when known) → note
+  const filed = (j && j.filed) || null;
+  let segBlock;
+  if (filed && !filed.single && filed.products && filed.products.length) {
+    segBlock = `
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">REVENUE BY PRODUCT / SEGMENT
+        <span class="ds-badge ds-live">● FILED · NSE segment report · Q ended ${esc(filed.period || '')}${filed.consolidated ? ' · consolidated' : ' · standalone'}</span></h4>
+      <div class="chart-box" style="padding:1rem"><div style="height:190px"><canvas id="seg-canvas"></canvas></div></div>
+      <div style="font-size:.68rem;color:var(--muted);margin-top:.35rem">Official Ind AS 108 segment revenue from the company's latest quarterly results filing on NSE
+      (${filed.consolidated ? 'consolidated' : 'standalone'}, quarter ended ${esc(filed.period || '—')}). Percentages are each segment's share of total segment revenue for that quarter.
+      Cross-check: ${nseAnnualReportLink(sym)}.</div>`;
+  } else if (cur && cur.products && cur.products.length) {
+    segBlock = `
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">REVENUE BY PRODUCT / SEGMENT ${curatedBadge}</h4>
+      <div class="chart-box" style="padding:1rem"><div style="height:190px"><canvas id="seg-canvas"></canvas></div></div>
+      <div style="font-size:.68rem;color:var(--muted);margin-top:.35rem">Hand-curated from the ${esc(cur.fy || '')} ${esc(cur.source || 'annual report')} (segmentCurated.json) — verify against the latest ${nseAnnualReportLink(sym)}.</div>`;
+  } else if (filed && filed.single) {
+    segBlock = `
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">REVENUE BY PRODUCT / SEGMENT
+        <span class="ds-badge ds-live">● FILED · NSE segment report</span></h4>
+      <div class="ratio-key">The company declares itself a <b>single-segment business</b> in its official quarterly filing
+      (quarter ended ${esc(filed.period || '—')}) — there is no product-wise revenue split to report. Details: ${nseAnnualReportLink(sym)}.</div>`;
+  } else if (j && j.segmentNames && j.segmentNames.length) {
+    segBlock = `
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">BUSINESS SEGMENTS <span class="ds-badge ds-live">● LIVE · stated in company profile</span></h4>
+      <div class="suggest-grid">${j.segmentNames.map(s => `<span class="suggest-chip" style="cursor:default">${esc(s)}</span>`).join('')}</div>
+      <div style="font-size:.68rem;color:var(--muted);margin-top:.35rem">Segment names as the company itself states them. The official % split loads from the NSE segment filing (may still be fetching) — authoritative source: ${nseAnnualReportLink(sym)}.</div>`;
+  } else {
+    segBlock = `
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">REVENUE BY PRODUCT / SEGMENT</h4>
+      <div class="ratio-key">The official segment filing for this symbol hasn't loaded yet (it fetches in the background from NSE) —
+      revisit shortly, or see the ${nseAnnualReportLink(sym)}.</div>`;
+  }
+
+  // — revenue / operations BY GEOGRAPHY —
+  const geoMentions = (j && j.geoMentions) || [];
+  let geoBlock;
+  if (cur && cur.geo && cur.geo.length) {
+    geoBlock = `
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">REVENUE BY GEOGRAPHY ${curatedBadge}</h4>
+      <div class="chart-box" style="padding:1rem"><div style="height:190px"><canvas id="geo-canvas"></canvas></div></div>
+      <div style="font-size:.68rem;color:var(--muted);margin-top:.35rem">Hand-curated from the ${esc(cur.fy || '')} ${esc(cur.source || 'annual report')} — verify against the latest ${nseAnnualReportLink(sym)}.</div>`;
+  } else if (geoMentions.length) {
+    geoBlock = `
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">COUNTRIES &amp; REGIONS OF OPERATION <span class="ds-badge ds-live">● LIVE · stated in company profile</span></h4>
+      <div class="suggest-grid">${geoMentions.map(g => `<span class="suggest-chip" style="cursor:default">${esc(g)}</span>`).join('')}</div>
+      <div style="font-size:.68rem;color:var(--muted);margin-top:.35rem">Extracted from the company's own business profile. Country-wise revenue % is published only in the ${nseAnnualReportLink(sym)}; add it to <b>segmentCurated.json</b> to chart it here.</div>`;
+  } else {
+    geoBlock = `
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">COUNTRIES &amp; REGIONS OF OPERATION</h4>
+      <div class="ratio-key">The company profile doesn't state an international footprint — operations are likely India-centric. Authoritative source: the ${nseAnnualReportLink(sym)}.</div>`;
+  }
+
+  // — revenue & profit TREND (reported filings) —
+  let trendBlock;
+  if (rs && rs.length) {
+    const unit = inr ? '₹ Cr' : ((j && j.fCurrency) || '');
+    trendBlock = `
+      <div class="chart-box" style="padding:1rem"><div style="height:230px"><canvas id="rev-canvas"></canvas></div></div>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:.5rem">Consolidated totals from reported annual filings (${esc(unit)}), FY${rs[0].fy}–FY${rs[rs.length - 1].fy}.</div>`;
+  } else {
+    trendBlock = `<div class="ratio-key">Reported revenue history isn't available from the free filings feed for this symbol${j ? '' : ' right now'}.</div>`;
+  }
+
+  el.innerHTML = `
+    <div class="section-header" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h2 style="font-size:1.1rem">${ic('bulb')} Revenue Breakdown &amp; Footprint</h2>
+      <span class="ds-badge ds-live">● LIVE · reported annual filings</span></div>
+    ${trendBlock}
+    ${segBlock}
+    ${geoBlock}`;
+
+  // charts last (canvases must exist); each is an enhancement — failures leave the notes standing
+  try {
+    if (_revChart) { _revChart.destroy(); _revChart = null; }
+    if (rs && rs.length) {
+      const unit = inr ? '₹ Cr' : ((j && j.fCurrency) || '');
+      const val = v => v == null ? null : (inr ? Math.round(v / 1e7) : v);
+      _revChart = new Chart(document.getElementById('rev-canvas'), {
+        type: 'bar',
+        data: { labels: rs.map(r => 'FY' + String(r.fy).slice(2)), datasets: [
+          { label: 'Revenue (' + unit + ')', data: rs.map(r => val(r.revenue)), backgroundColor: 'rgba(79,156,249,.55)', borderRadius: 4 },
+          { label: 'Net profit (' + unit + ')', data: rs.map(r => val(r.netIncome)), backgroundColor: 'rgba(46,163,107,.65)', borderRadius: 4 },
+        ]},
+        options: { responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: '#98a4b3', font: { size: 11 } } },
+            tooltip: { callbacks: { label: c => c.dataset.label + ': ' + (c.raw != null ? Number(c.raw).toLocaleString('en-IN') : '—') } } },
+          scales: { x: { ticks: { color: '#98a4b3' }, grid: { color: 'rgba(255,255,255,.05)' } },
+                    y: { ticks: { color: '#98a4b3', callback: v => Number(v).toLocaleString('en-IN') }, grid: { color: 'rgba(255,255,255,.06)' } } } }
+      });
+    }
+    if (_segChart) { _segChart.destroy(); _segChart = null; }
+    const segRows = (filed && !filed.single && filed.products && filed.products.length) ? filed.products
+      : (cur && cur.products && cur.products.length) ? cur.products : null;
+    if (segRows) _segChart = segDonut('seg-canvas', segRows);
+    if (_geoChart) { _geoChart.destroy(); _geoChart = null; }
+    if (cur && cur.geo && cur.geo.length) _geoChart = segDonut('geo-canvas', cur.geo);
+  } catch (e) { /* charts are enhancements — the labeled notes above still stand */ }
+}
+
+// ── Major contracts & strategic deals — deal-related headlines from the live news feed ──
+const DEAL_RE = /\border(s)?\b|contract|deal\b|acquir|acquisition|merger|partnership|joint venture|\bjv\b|\bmou\b|pact\b|agreement|stake\b|\bwins?\b|bags?\b|awarded|tie-?up|collabor/i;
+async function loadContractsNews(sym, name) {
+  const el = document.getElementById('contracts-live');
+  if (!el) return;
+  el.innerHTML = `<div class="section-header"><h2 style="font-size:1.1rem">${ic('doc')} Major Contracts &amp; Strategic Deals</h2></div><div class="swot-loading">Scanning live news for deal headlines…</div>`;
+  try {
+    const q = (name && name !== sym) ? name : sym;
+    const r = await fetch('/api/news?q=' + encodeURIComponent(q));
+    const j = await r.json();
+    const rows = ((j && j.items) || []).filter(n => DEAL_RE.test(n.title)).slice(0, 6);
+    const body = rows.length
+      ? `<div class="contract-list">${rows.map(n => `
+          <a class="contract-card" href="${esc(n.link)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none">
+            <div class="ct-ico">${ic('doc')}</div>
+            <div class="ct-body">
+              <div class="ct-top"><span class="ct-client">${esc(n.title)}</span></div>
+              <div class="ct-detail">${esc(n.source)} · ${relTime(n.pubMs)} · <span class="news-tag tag-${n.tag}">${n.tag === 'bull' ? 'Bullish' : n.tag === 'bear' ? 'Bearish' : 'Neutral'}</span></div>
+            </div>
+          </a>`).join('')}</div>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:.5rem">Deal, order-win and partnership headlines from live Google News for ${esc(q)} — click through for the full story.</div>`
+      : `<div class="ratio-key">No contract or deal headlines for ${esc(q)} in the current news window — this section fills in automatically when order-win / M&amp;A / partnership stories appear.</div>`;
+    el.innerHTML = `<div class="section-header" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h2 style="font-size:1.1rem">${ic('doc')} Major Contracts &amp; Strategic Deals</h2>
+      <span class="ds-badge ds-live">● LIVE · news-derived</span></div>${body}`;
+  } catch (e) {
+    el.innerHTML = `<div class="section-header"><h2 style="font-size:1.1rem">${ic('doc')} Major Contracts &amp; Strategic Deals</h2></div>
+      <div class="ratio-key">Deal-news feed unavailable right now — <a href="#" style="color:var(--gold)" onclick="loadContractsNews('${esc(sym)}','${esc(name || sym)}');return false">retry</a>.</div>`;
+  }
+}
+
+// Sector-level PESTLE templates keyed by Yahoo's fixed 11-sector taxonomy. These are the
+// macro factors that apply to every Indian company IN THAT SECTOR — clearly labeled as
+// sector-level context, NOT company-specific research (which no free feed provides).
+const SECTOR_PESTLE = {
+  'Technology': [
+    ['P','Political','#4f9cf9','US visa/H-1B policy and data-localisation rules shape delivery models and onsite costs for Indian IT.',70],
+    ['E','Economic','#2ea36b','USD/INR moves and US/EU tech-spending cycles drive revenue growth and margins — most billing is in dollars.',85],
+    ['S','Social','#c9a35f','Talent supply, attrition and wage inflation set the cost curve; hybrid work changed utilisation economics.',60],
+    ['T','Technological','#9f7aea','GenAI is both a threat (deflates traditional services) and an opportunity (AI transformation deals).',85],
+    ['L','Legal','#d0605a','Data-privacy regimes (India DPDP, EU GDPR) and client-contract liability clauses raise compliance stakes.',55],
+    ['En','Environmental','#38b2ac','Client ESG mandates and data-centre energy footprints are now part of large-deal evaluations.',40]],
+  'Financial Services': [
+    ['P','Political','#4f9cf9','RBI policy, PSU-bank ownership and credit-growth priorities of the government steer the sector.',75],
+    ['E','Economic','#2ea36b','The rate cycle drives NIMs; credit growth and asset-quality cycles decide earnings trajectories.',90],
+    ['S','Social','#c9a35f','UPI-led digital adoption and financial inclusion keep expanding the addressable base.',65],
+    ['T','Technological','#9f7aea','Fintech/UPI competition compresses fees; digital lending and account-aggregator rails reshape distribution.',70],
+    ['L','Legal','#d0605a','RBI regulation (capital norms, provisioning, digital-lending rules) is the binding constraint.',80],
+    ['En','Environmental','#38b2ac','Green-finance mandates and climate-risk disclosure are entering RBI supervisory expectations.',35]],
+  'Energy': [
+    ['P','Political','#4f9cf9','OPEC+ actions, sanctions and domestic fuel-subsidy policy set the operating backdrop.',80],
+    ['E','Economic','#2ea36b','Crude prices, refining margins (GRMs) and USD/INR determine profitability swings.',90],
+    ['S','Social','#c9a35f','India’s energy demand keeps compounding with urbanisation and industrial growth.',60],
+    ['T','Technological','#9f7aea','The renewables/EV transition threatens long-term demand; green hydrogen is the strategic pivot.',70],
+    ['L','Legal','#d0605a','Windfall taxes, environmental clearances and pricing regulation can change economics overnight.',70],
+    ['En','Environmental','#38b2ac','Net-zero commitments force heavy transition capex and carbon-cost exposure.',75]],
+  'Healthcare': [
+    ['P','Political','#4f9cf9','US drug-pricing policy and India’s PLI schemes shape the export-led pharma model.',65],
+    ['E','Economic','#2ea36b','US generics price erosion vs. India/EM branded growth decides margin mix; USD/INR helps exporters.',75],
+    ['S','Social','#c9a35f','Ageing populations and chronic-disease prevalence keep structural demand rising.',70],
+    ['T','Technological','#9f7aea','Biosimilars, CDMO scale-up and GLP-1 adjacencies are the big optionality drivers.',75],
+    ['L','Legal','#d0605a','US FDA inspection outcomes and patent litigation are binary risk events for exporters.',85],
+    ['En','Environmental','#38b2ac','Effluent-discharge norms around API hubs tighten; green chemistry is a differentiator.',45]],
+  'Basic Materials': [
+    ['P','Political','#4f9cf9','Import duties, export restrictions and China’s supply policy set the pricing floor/ceiling.',75],
+    ['E','Economic','#2ea36b','Global commodity cycles and China demand dominate realisations; domestic infra capex sets volumes.',90],
+    ['S','Social','#c9a35f','Land, rehabilitation and community consent are gating factors for capacity expansion.',50],
+    ['T','Technological','#9f7aea','Green steel, hydrogen-based reduction and recycling economics will re-rank cost curves.',60],
+    ['L','Legal','#d0605a','Mining leases, royalty regimes and anti-dumping actions materially move earnings.',70],
+    ['En','Environmental','#38b2ac','Emission caps and decarbonisation capex are the sector’s largest long-term cost items.',80]],
+  'Consumer Cyclical': [
+    ['P','Political','#4f9cf9','GST slabs, EV subsidies (FAME) and scrappage policy steer demand and product mix.',60],
+    ['E','Economic','#2ea36b','Discretionary demand tracks income growth, financing rates and the rural recovery.',85],
+    ['S','Social','#c9a35f','Premiumisation and aspirational consumption are the structural volume drivers.',70],
+    ['T','Technological','#9f7aea','EVs, connected vehicles and e-commerce channels are re-drawing competitive moats.',75],
+    ['L','Legal','#d0605a','Safety/emission norms (BS-VI, CAFE) force compliance capex and platform refreshes.',60],
+    ['En','Environmental','#38b2ac','The EV transition and lifecycle-emissions scrutiny reshape long-term product roadmaps.',65]],
+  'Consumer Defensive': [
+    ['P','Political','#4f9cf9','GST rates, MSP/agri policy and food-inflation politics touch both costs and demand.',55],
+    ['E','Economic','#2ea36b','Rural demand recovery and input-cost inflation (palm oil, crude derivatives) drive margins.',80],
+    ['S','Social','#c9a35f','Premiumisation in urban vs. down-trading in stressed rural pockets splits the portfolio.',65],
+    ['T','Technological','#9f7aea','Quick-commerce and D2C brands are rewiring distribution economics.',70],
+    ['L','Legal','#d0605a','FSSAI standards, labelling and advertising rules are recurring compliance surfaces.',50],
+    ['En','Environmental','#38b2ac','Plastic-packaging EPR rules and water stewardship are rising cost/reputation factors.',55]],
+  'Industrials': [
+    ['P','Political','#4f9cf9','Government capex, defence indigenisation and PLI schemes are the demand engine.',80],
+    ['E','Economic','#2ea36b','The private capex cycle, order inflows and commodity input costs decide the earnings path.',85],
+    ['S','Social','#c9a35f','Urban infrastructure buildout and skilled-labour availability shape execution.',55],
+    ['T','Technological','#9f7aea','Automation, robotics and energy-transition equipment open new order books.',65],
+    ['L','Legal','#d0605a','Land acquisition, arbitration and contract-execution risk are the classic overhangs.',60],
+    ['En','Environmental','#38b2ac','The green-energy capex boom (solar, transmission, storage) is a major order driver.',60]],
+  'Utilities': [
+    ['P','Political','#4f9cf9','Tariff policy and state-discom financial health decide realisation and receivables.',80],
+    ['E','Economic','#2ea36b','Fuel costs (coal/gas) and PPA renewals set spreads; demand grows with per-capita usage.',75],
+    ['S','Social','#c9a35f','24×7 power expectations and electrification keep structural demand rising.',55],
+    ['T','Technological','#9f7aea','Solar/wind/storage economics and smart grids are transforming the generation mix.',75],
+    ['L','Legal','#d0605a','CERC/SERC regulation and renewable purchase obligations bind the business model.',70],
+    ['En','Environmental','#38b2ac','Coal phase-down pressure vs. India’s baseload needs is the core long-term tension.',75]],
+  'Communication Services': [
+    ['P','Political','#4f9cf9','Spectrum pricing, AGR rulings and telecom-relief packages have made policy the sector’s biggest swing factor.',80],
+    ['E','Economic','#2ea36b','ARPU repair and 5G capex intensity decide free-cash-flow inflection.',85],
+    ['S','Social','#c9a35f','Data consumption keeps compounding; digital entertainment is mainstream across India.',65],
+    ['T','Technological','#9f7aea','5G monetisation, fiber broadband and OTT bundling are the growth vectors.',75],
+    ['L','Legal','#d0605a','TRAI regulation and interconnection/QoS rules shape competitive conduct.',60],
+    ['En','Environmental','#38b2ac','Tower energy consumption and e-waste are the sector’s main footprint items.',35]],
+  'Real Estate': [
+    ['P','Political','#4f9cf9','Stamp-duty policy, affordable-housing incentives and urban planning decisions move demand.',65],
+    ['E','Economic','#2ea36b','Mortgage rates and urban income growth drive absorption; the rate cycle is decisive.',85],
+    ['S','Social','#c9a35f','Urbanisation, nuclear families and the office return-to-work cycle shape both segments.',65],
+    ['T','Technological','#9f7aea','Proptech distribution and green-building certification are becoming differentiators.',45],
+    ['L','Legal','#d0605a','RERA compliance, approvals and clear land titles are the gating legal factors.',75],
+    ['En','Environmental','#38b2ac','Green certification (IGBC/LEED) increasingly commands rental/valuation premiums.',45]],
+};
+const GENERIC_PESTLE = [
+  ['P','Political','#4f9cf9','Government policy, taxation and regulatory direction shape the operating environment for Indian listed companies.',60],
+  ['E','Economic','#2ea36b','GDP growth, inflation, interest rates and the INR set the macro backdrop for demand and financing costs.',75],
+  ['S','Social','#c9a35f','Demographics, urbanisation and rising discretionary income drive India’s structural consumption story.',60],
+  ['T','Technological','#9f7aea','Digitisation and AI adoption are reshaping cost structures and competitive moats across sectors.',65],
+  ['L','Legal','#d0605a','SEBI/company-law compliance, sector regulation and litigation outcomes are recurring risk factors.',55],
+  ['En','Environmental','#38b2ac','ESG disclosure norms (BRSR) and climate-transition costs increasingly affect valuations.',45]];
+function renderSectorPestle(sectorYh, companyName) {
+  const el = document.getElementById('pestle-live');
+  if (!el) return;
+  const rows = SECTOR_PESTLE[sectorYh] || GENERIC_PESTLE;
+  const secLabel = SECTOR_PESTLE[sectorYh] ? sectorYh : 'General (India macro)';
+  el.innerHTML = `
+    <div class="section-header" style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+      <h2 style="font-size:1.1rem;margin:0">${ic('globe')} PESTLE Analysis</h2>
+      <span class="ds-badge ds-sim" style="vertical-align:middle">● SECTOR-LEVEL · ${esc(secLabel)}</span>
+    </div>
+    <div class="pestle-list">
+      ${rows.map(([letter, name, color, text, impact]) => `
+        <div class="pestle-item">
+          <div class="pestle-letter" style="background:${color}22;color:${color}">${letter}</div>
+          <div class="pestle-content" style="flex:1">
+            <h5>${name}</h5>
+            <p>${text}</p>
+            <div class="pestle-bar"><div class="pestle-fill" style="width:${impact}%;background:${color}"></div></div>
+          </div>
+          <div style="font-size:.75rem;color:var(--muted);text-align:right;flex-shrink:0">Impact<br><b style="color:${color}">${impact}%</b></div>
+        </div>`).join('')}
+    </div>
+    <div style="font-size:.7rem;color:var(--muted);margin-top:.5rem">Sector-level macro factors for <b>${esc(secLabel)}</b> companies in India — context that applies to ${esc(companyName || 'this stock')}'s sector as a whole, not company-specific research. Impact weights are editorial estimates.</div>`;
 }
 
 // ═══════════ live SWOT (real, from Trendlyne via /api/swot) ═══════════
@@ -3931,13 +4370,16 @@ function forensicsHtml(data) {
     const p = f.piotroski;
     const vtxt = { good: 'Strong', avg: 'Middling', weak: 'Weak' }[p.verdict] || p.verdict;
     const dots = Array.from({ length: p.max }, (_, i) => `<div class="fx-dot ${i < p.score ? 'on' : ''}"></div>`).join('');
-    const checks = p.checks.map(c => `<li class="${c.ok ? 'ok' : 'no'}">${c.label}</li>`).join('');
+    // na = the filing line items for that check aren't published — shown grey, excluded from the verdict
+    const checks = p.checks.map(c => `<li class="${c.na ? 'na' : c.ok ? 'ok' : 'no'}" ${c.na ? 'title="not evaluable — line items missing from the filings feed"' : ''}>${c.label}${c.na ? ' <small style="color:var(--muted)">(no data)</small>' : ''}</li>`).join('');
+    const evalNote = (p.evaluable != null && p.evaluable < p.max)
+      ? `<div class="fx-meta" style="margin-top:.3rem">${p.max - p.evaluable} of 9 checks lacked filing data — verdict uses the ${p.evaluable} evaluable checks</div>` : '';
     pio = `<div class="forensic-card">
       <h4>Piotroski F-Score</h4>
-      <div class="fx-big">${p.score}<small> / 9</small></div>
+      <div class="fx-big">${p.score}<small> / ${p.evaluable != null ? p.evaluable : 9}</small></div>
       <span class="fx-zone ${p.verdict}">${vtxt}</span>
       <div class="fx-dots">${dots}</div>
-      <ul class="fx-checks">${checks}</ul>
+      <ul class="fx-checks">${checks}</ul>${evalNote}
     </div>`;
   }
 
@@ -4303,14 +4745,15 @@ function navPill(elId, label, o, prefix) {
 // ═══════════════════════ TRADINGVIEW FULL CHART (nav-pill click) ═══════════════════════
 // Embeds TradingView's own Advanced Chart widget so the candles are *literally* TradingView
 // data — guaranteed in sync, never drifting from what the user sees on tradingview.com.
-// GOLD maps to MCX:GOLD (Gold Futures INR, ₹/10g) — the exact contract the pill value mirrors.
+// GOLD is an INDICATIVE ₹/10g landed price derived from COMEX (GC=F) × USD/INR × a duty premium —
+// NOT the live MCX contract tick (COMEX and MCX trade different sessions, so it drifts ~1%).
 // Nav-pill charts render with our OWN lightweight-charts candles (via /api/ohlc), not the
 // TradingView embed — TV's free widget refuses NSE indices ("only available on TradingView").
 // Data is Yahoo split-adjusted (indices) / synthetic ₹-per-10g (gold), tracking TradingView.
 const TV_SYMBOLS = {
   'nav-nifty':     { sym: '^NSEI',    label: 'NIFTY 50' },
   'nav-banknifty': { sym: '^NSEBANK', label: 'BANK NIFTY' },
-  'nav-gold':      { sym: 'GOLD',     label: 'GOLD · MCX-style ₹/10g' },
+  'nav-gold':      { sym: 'GOLD',     label: 'GOLD · indicative ₹/10g (COMEX-derived)' },
 };
 const TVTF_MAP = { '5': '5 Min', '15': '15 Min', '60': '1 Hour', 'D': '1 Day', 'W': '1 Week' };
 let tvTf = '1 Day', tvSymbol = null;
@@ -4557,6 +5000,44 @@ async function openIndex(name, opts) {
   }
 }
 let lastIndexData = null;   // stashed so the Excel download can rebuild the full list
+// ── constituents pagination: 15 per page with Prev / Next (Excel download still exports all) ──
+const IDX_PAGE_SIZE = 15;
+let _idxPage = 0;
+function _idxNum(n) { return n != null ? Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }) : '—'; }
+function _idxVol(n) { return n != null ? Number(n).toLocaleString('en-IN') : '—'; }
+function idxMemberRow(m) {
+  const mc = m.pct >= 0 ? 'up' : 'dn';
+  const contrib = m.contribution != null ? `<span class="${m.contribution >= 0 ? 'up' : 'dn'}">${m.contribution > 0 ? '+' : ''}${m.contribution}</span>` : '—';
+  return `<tr>
+    <td class="msym">${esc(m.sym)}<div style="font-size:.7rem;color:var(--muted);font-weight:400">${esc(m.name || '')}</div></td>
+    <td class="num">${m.price != null ? '₹' + _idxNum(m.price) : '—'}</td>
+    <td class="num ${mc}">${m.pct > 0 ? '+' : ''}${m.pct}%</td>
+    <td class="num hide-sm">${m.weight != null ? m.weight + '%' : '—'}</td>
+    <td class="num">${contrib}</td>
+    <td class="num hide-sm">${_idxVol(m.volume)}</td>
+  </tr>`;
+}
+function renderIndexMembers() {
+  const j = lastIndexData;
+  if (!j || !j.members) return;
+  const total = j.members.length;
+  const pages = Math.max(1, Math.ceil(total / IDX_PAGE_SIZE));
+  _idxPage = Math.min(Math.max(_idxPage, 0), pages - 1);
+  const start = _idxPage * IDX_PAGE_SIZE, end = Math.min(start + IDX_PAGE_SIZE, total);
+  const tb = document.getElementById('idx-tbody');
+  if (tb) tb.innerHTML = j.members.slice(start, end).map(idxMemberRow).join('');
+  const info = document.getElementById('idx-pager-info');
+  if (info) info.textContent = `Showing ${total ? start + 1 : 0}–${end} of ${total}  ·  page ${_idxPage + 1}/${pages}`;
+  const prev = document.getElementById('idx-prev'), next = document.getElementById('idx-next');
+  if (prev) prev.disabled = _idxPage === 0;
+  if (next) next.disabled = _idxPage >= pages - 1;
+}
+function idxPage(delta) {
+  _idxPage += delta;
+  renderIndexMembers();
+  const head = document.getElementById('idx-constituents-head');
+  if (head) head.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 function renderIndexPage(j) {
   lastIndexData = j;
   const idx = j.index || {};
@@ -4564,18 +5045,7 @@ function renderIndexPage(j) {
   const num = n => n != null ? Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }) : '—';
   const vol = n => n != null ? Number(n).toLocaleString('en-IN') : '—';
   const adv = j.members.filter(m => m.pct > 0).length, dec = j.members.filter(m => m.pct < 0).length;
-  const rows = j.members.map(m => {
-    const mc = m.pct >= 0 ? 'up' : 'dn';
-    const contrib = m.contribution != null ? `<span class="${m.contribution >= 0 ? 'up' : 'dn'}">${m.contribution > 0 ? '+' : ''}${m.contribution}</span>` : '—';
-    return `<tr>
-      <td class="msym">${m.sym}<div style="font-size:.7rem;color:var(--muted);font-weight:400">${m.name || ''}</div></td>
-      <td class="num">${m.price != null ? '₹' + num(m.price) : '—'}</td>
-      <td class="num ${mc}">${m.pct > 0 ? '+' : ''}${m.pct}%</td>
-      <td class="num hide-sm">${m.weight != null ? m.weight + '%' : '—'}</td>
-      <td class="num">${contrib}</td>
-      <td class="num hide-sm">${vol(m.volume)}</td>
-    </tr>`;
-  }).join('');
+  _idxPage = 0;   // constituents are paginated 15-per-page (see renderIndexMembers)
   document.getElementById('index-result').innerHTML = `
     <div class="idx-hero">
       <div><div class="big">${num(idx.value)}</div><div class="sub">${j.name}</div></div>
@@ -4590,17 +5060,23 @@ function renderIndexPage(j) {
       <div class="candle-head"><h4>${j.name} — daily candles</h4><div class="candle-legend" id="cl-index"></div></div>
       <div class="candle-box" id="chart-index"></div>
     </div>
-    <div class="constituents-head">
-      <h4>CONSTITUENTS ${j.weighted ? "(sorted by contribution to today's move)" : '(sorted by % change)'} — ${j.members.length} shown</h4>
+    <div class="constituents-head" id="idx-constituents-head">
+      <h4>CONSTITUENTS ${j.weighted ? "(sorted by contribution to today's move)" : '(sorted by % change)'} — ${j.members.length} total</h4>
       <button class="dl-btn" id="idx-dl-btn" onclick="downloadIndexExcel()" title="Download the full constituents list as an Excel file">${ic('dl')} Download Excel</button>
     </div>
     <div style="overflow-x:auto">
       <table class="members-table">
         <thead><tr><th>Stock</th><th class="num">Price</th><th class="num">% Chg</th><th class="num hide-sm">Weight</th><th class="num">Contribution</th><th class="num hide-sm">Volume</th></tr></thead>
-        <tbody>${rows}</tbody>
+        <tbody id="idx-tbody"></tbody>
       </table>
     </div>
-    <p style="font-size:.72rem;color:var(--muted);margin-top:.75rem">${j.weighted ? 'Weights are approximate. ' : "Sorted by today's move (weights unavailable for this index). "}Contribution ≈ weight × % change (index %-points). Live via Yahoo Finance.</p>`;
+    <div class="idx-pager">
+      <button class="idx-pg-btn" id="idx-prev" onclick="idxPage(-1)">← Prev</button>
+      <span class="idx-pager-info" id="idx-pager-info"></span>
+      <button class="idx-pg-btn" id="idx-next" onclick="idxPage(1)">Next 15 →</button>
+    </div>
+    <p style="font-size:.72rem;color:var(--muted);margin-top:.75rem">${j.weighted ? 'Weights are approximate. ' : "Sorted by today's move (weights unavailable for this index). "}Contribution ≈ weight × % change (index %-points). Live via Yahoo Finance. Download Excel exports all ${j.members.length}.</p>`;
+  renderIndexMembers();
   renderCandles('chart-index', 'cl-index', j.yahoo, '1 Day');
 }
 
@@ -4950,9 +5426,11 @@ function pfRender(j) {
     const trend = h.above200 ? (h.above50 ? dot('g') + 'Strong' : dot('y') + 'Mixed') : (h.above50 ? dot('y') + 'Mixed' : dot('r') + 'Weak');
     const pnlCell = h.pnlPct != null ? `<span style="color:${col(h.pnl)}">${sgn(h.pnlPct)}${h.pnlPct}%</span>` : '<span style="color:var(--muted)">—</span>';
     const r3 = h.ret3m != null ? `<span style="color:${col(h.ret3m)}">${sgn(h.ret3m)}${h.ret3m}%</span>` : '—';
-    const qc = h.fscore != null ? (h.fscore >= 7 ? 'var(--green)' : h.fscore >= 4 ? 'var(--yellow)' : 'var(--red)') : 'var(--muted)';
+    const fMax = h.feval != null ? h.feval : 9;   // evaluable checks (missing filings excluded server-side)
+    const fFrac = h.fscore != null && fMax ? h.fscore / fMax : null;
+    const qc = fFrac != null ? (fFrac >= 7 / 9 ? 'var(--green)' : fFrac >= 4 / 9 ? 'var(--yellow)' : 'var(--red)') : 'var(--muted)';
     const qCell = h.fscore != null
-      ? `<span style="color:${qc};font-weight:600" title="Piotroski F-Score ${h.fscore}/9${h.z != null ? ' · Altman Z″ ' + h.z : ''}${h.accrualsFlag ? ' · accruals: ' + h.accrualsFlag : ''}">F ${h.fscore}/9${h.zZone === 'weak' ? ' <span style="color:var(--red)" title="Altman Z″ distress zone">▾Z</span>' : ''}</span>`
+      ? `<span style="color:${qc};font-weight:600" title="Piotroski F-Score ${h.fscore}/${fMax}${fMax < 9 ? ' (' + (9 - fMax) + ' checks lacked data)' : ''}${h.z != null ? ' · Altman Z″ ' + h.z : ''}${h.accrualsFlag ? ' · accruals: ' + h.accrualsFlag : ''}">F ${h.fscore}/${fMax}${h.zZone === 'weak' ? ' <span style="color:var(--red)" title="Altman Z″ distress zone">▾Z</span>' : ''}</span>`
       : `<span style="color:var(--muted)" title="${h.qualityNote === 'bank' ? 'bank/financial — statement forensics not applicable' : 'no filings data'}">—</span>`;
     const riskCell = `<span title="annualised volatility${h.beta != null ? ' · beta vs market' : ''}${h.riskShare != null ? ' · drives ' + h.riskShare + '% of portfolio volatility' : ''}">${h.vol != null ? h.vol + '%' : '—'}${h.beta != null ? ' <span style="color:var(--muted)">β' + h.beta + '</span>' : ''}</span>`;
     const peerCell = h.peerPct != null
@@ -5087,12 +5565,12 @@ function renderBacktest(j) {
 
 // ═══════════════════════ HOME DASHBOARD (Today's Pulse, breadth, glance, watchlist, sparks) ═══════════════════════
 async function loadPulse() {
+  loadBreadth();   // breadth loads independently (fast Nifty 50 → full Nifty 500) so it's never blocked by pulse
   try {
     const r = await fetch('/api/pulse');
     const j = await r.json();
     if (!r.ok || j.error) throw new Error(j.error || 'pulse unavailable');
     renderPulseBrief(j);
-    renderBreadth(j.breadth);
     renderGlance(j);
     const asof = document.getElementById('pulse-asof');
     if (asof) asof.textContent = 'updated ' + new Date(j.asOf).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
@@ -5108,28 +5586,71 @@ function renderPulseBrief(j) {
   el.innerHTML = `<ul class="brief-list">` + j.brief.map(b =>
     `<li>${dot(b.tone === 'good' ? 'g' : b.tone === 'bad' ? 'r' : b.tone === 'warn' ? 'y' : 'g')}<span>${esc(b.text)}</span></li>`).join('') + `</ul>`;
 }
+// Breadth loader: shows the always-warm Nifty 50 reading INSTANTLY, then upgrades to the full
+// Nifty 500 reading the moment its background scan lands — auto-polling so the user never has to
+// sit on a "warming…" message or hit refresh. `force` re-scans (Refresh button).
+let _breadthTimer = null, _breadthBest = 0;   // 0 = nothing shown, 50 = Nifty 50, 500 = Nifty 500
+async function loadBreadth(force, btn) {
+  if (btn) { btn.classList.add('spin'); setTimeout(() => btn.classList.remove('spin'), 900); }
+  clearTimeout(_breadthTimer);
+  _breadthBest = 0;
+  // 1) instant quick reading from the small, always-warm Nifty 50 universe
+  fetch('/api/breadth?uni=' + encodeURIComponent('Nifty 50') + (force ? '&force=1' : ''))
+    .then(r => r.json())
+    .then(res => { if (res && res.breadth && _breadthBest < 50) { _breadthBest = 50; renderBreadth(res.breadth); } })
+    .catch(() => {});
+  // 2) the full Nifty 500 reading — the batched server scan lands in seconds, so poll fast
+  //    at first, then back off; after the cap show a Retry action instead of a stuck spinner
+  let tries = 0;
+  const poll = async () => {
+    tries++;
+    let res = null;
+    try { res = await (await fetch('/api/breadth?uni=' + encodeURIComponent('Nifty 500') + (force && tries === 1 ? '&force=1' : ''))).json(); } catch (e) {}
+    if (res && res.breadth) { _breadthBest = 500; renderBreadth(res.breadth); return; }
+    if (_breadthBest === 0) renderBreadthWarming(tries);   // only show "warming" if nothing is on screen yet
+    if (tries < 30) _breadthTimer = setTimeout(poll, tries < 8 ? 2500 : 5000);
+    else if (_breadthBest === 0) renderBreadthStalled();   // gave up with nothing on screen → offer retry
+  };
+  poll();
+}
+function renderBreadthWarming(tries) {
+  const el = document.getElementById('pulse-breadth');
+  if (!el) return;
+  el.innerHTML = `<div class="breadth-warm"><div class="spin-ring sm"></div>
+    <div><b>Scanning the Nifty 500…</b><div class="ratio-key" style="margin-top:2px">200-DMA participation across 500 stocks — this fills in automatically, no refresh needed${tries > 1 ? ` · checking again…` : ''}.</div></div></div>`;
+}
+function renderBreadthStalled() {
+  const el = document.getElementById('pulse-breadth');
+  if (!el) return;
+  el.innerHTML = `<div class="breadth-warm">
+    <div><b>Scan is taking longer than usual.</b><div class="ratio-key" style="margin-top:2px">The data source may be slow or unreachable right now.
+    <a href="#" onclick="loadBreadth(); return false" style="color:var(--gold)">Retry now</a></div></div></div>`;
+}
 function renderBreadth(b) {
   const el = document.getElementById('pulse-breadth');
   if (!el) return;
-  if (!b) { el.innerHTML = '<div class="ratio-key">The Nifty 500 scan is warming in the background — breadth appears on the next refresh.</div>'; return; }
+  if (!b) { renderBreadthWarming(1); return; }
   const col = b.regime === 'Bullish' ? 'var(--green)' : b.regime === 'Neutral' ? 'var(--gold)' : 'var(--red)';
+  const quick = b.uni === 'Nifty 50';
+  const uniTag = `<span class="breadth-uni${quick ? ' quick' : ''}">${quick ? 'Nifty 50 · quick read' : esc(b.uni || 'Nifty 500')}</span>`;
   el.innerHTML = `
     <div class="breadth-top"><span class="breadth-regime" style="color:${col};border-color:${col}">${b.regime}</span>
-      <span class="breadth-big">${b.pct200}<small>% above 200-DMA</small></span></div>
+      <span class="breadth-big">${b.pct200}<small>% above 200-DMA</small></span>${uniTag}</div>
     <div class="breadth-bar"><div class="breadth-zones"></div><div class="breadth-marker" style="left:${b.pct200}%"></div></div>
     <div class="breadth-scale"><span>0 · Bearish</span><span>50</span><span>100 · Bullish</span></div>
     <div class="breadth-meta">
       <span>${b.pct20}% above the 20-DMA</span>
       <span>Advances <b class="up">${b.adv}</b> / Declines <b class="dn">${b.dec}</b></span>
       <span>${b.n} stocks scanned</span>
+      ${b.asOf ? `<span title="when this scan completed">as of ${new Date(b.asOf).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>` : ''}
     </div>`;
 }
 function renderGlance(j) {
   const el = document.getElementById('glance-row');
   if (!el) return;
   const chips = [];
-  if (j.gainer) chips.push({ lbl: 'Top gainer', main: j.gainer.sym, sub: `+${j.gainer.ret}%`, cls: 'up', go: () => openSym(j.gainer.sym) });
-  if (j.loser) chips.push({ lbl: 'Top loser', main: j.loser.sym, sub: `${j.loser.ret}%`, cls: 'dn', go: () => openSym(j.loser.sym) });
+  if (j.gainer) chips.push({ lbl: 'Top gainer · Nifty 50', main: j.gainer.sym, sub: `+${j.gainer.ret}%`, cls: 'up', go: () => openSym(j.gainer.sym) });
+  if (j.loser) chips.push({ lbl: 'Top loser · Nifty 50', main: j.loser.sym, sub: `${j.loser.ret}%`, cls: 'dn', go: () => openSym(j.loser.sym) });
   if (j.fii && j.fii.fii) chips.push({ lbl: 'FII net (' + j.fii.date.slice(0, 6) + ')', main: crFmt(j.fii.fii.n), sub: j.fii.dii ? 'DII ' + crFmt(j.fii.dii.n) : '', cls: j.fii.fii.n >= 0 ? 'up' : 'dn', go: () => showPage('flows') });
   if (j.spike) chips.push({ lbl: 'Delivery spike', main: j.spike.sym, sub: `${j.spike.volX}× vol · ${j.spike.delivPer}% dlv`, cls: j.spike.chg >= 0 ? 'up' : 'dn', go: () => showPage('flows') });
   if (j.results && j.results.length) chips.push({ lbl: 'Next results', main: j.results[0].sym, sub: j.results[0].daysTo === 0 ? 'today' : j.results[0].daysTo === 1 ? 'tomorrow' : 'in ' + j.results[0].daysTo + 'd', cls: '', go: () => showPage('flows') });
@@ -5153,23 +5674,32 @@ async function injectSparks() {
     if (!r.ok) return;
     const j = await r.json();
     const byName = {};
-    (j.sparks || []).forEach(s => byName[s.name] = s.pts);
+    (j.sparks || []).forEach(s => byName[s.name] = s);
     document.querySelectorAll('#index-row .idx-card').forEach(card => {
       const nameEl = card.querySelector('.idx-name');
       if (!nameEl) return;
       const name = nameEl.textContent.replace('›', '').trim();
-      const pts = byName[name];
+      const s = byName[name];
+      const pts = s && s.pts;
       if (!pts || pts.length < 3 || card.querySelector('.idx-spark')) return;
       const W = 120, H = 26;
-      const min = Math.min(...pts), max = Math.max(...pts), rng = (max - min) || 1;
-      const line = pts.map((v, i) => `${(i * W / (pts.length - 1)).toFixed(1)},${(H - 2 - (v - min) / rng * (H - 4)).toFixed(1)}`).join(' ');
-      const up = pts[pts.length - 1] >= pts[0];
+      // Colour + baseline against YESTERDAY'S CLOSE — the same reference the card's headline %
+      // uses — so the line's colour always agrees with the number. Falls back to the first
+      // intraday point only when the prior close isn't available. (audit 10-Jul-2026)
+      const ref = (s.prevClose != null) ? s.prevClose : pts[0];
+      // include ref in the y-range so the baseline is always on-canvas
+      const min = Math.min(ref, ...pts), max = Math.max(ref, ...pts), rng = (max - min) || 1;
+      const y = v => (H - 2 - (v - min) / rng * (H - 4));
+      const line = pts.map((v, i) => `${(i * W / (pts.length - 1)).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+      const up = pts[pts.length - 1] >= ref;
       const col = up ? 'var(--green)' : 'var(--red)';
+      const baseY = y(ref).toFixed(1);
       const div = document.createElement('div');
       div.className = 'idx-spark';
       div.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}" stroke="var(--muted)" stroke-width="0.5" stroke-dasharray="2 2" opacity="0.5"/>
         <polyline points="${line}" fill="none" stroke="${col}" stroke-width="1.4"/>
-        <polygon points="0,${H} ${line} ${W},${H}" fill="${col}" opacity="0.08"/></svg>`;
+        <polygon points="0,${baseY} ${line} ${W},${baseY}" fill="${col}" opacity="0.08"/></svg>`;
       card.appendChild(div);
     });
   } catch (e) { /* sparks are decoration — fail silently */ }
@@ -5433,7 +5963,10 @@ async function loadThesis(sym) {
     const j = await r.json();
     if (!r.ok || j.error) throw new Error(j.error || 'no data');
     el.innerHTML = thesisHtml(j);
-  } catch (e) { el.innerHTML = ''; }
+  } catch (e) {   // visible + retryable — a silently vanishing panel reads as "missing information"
+    el.innerHTML = `<div class="ratio-key" style="margin-bottom:1.2rem">Analyst brief unavailable right now (${esc(e.message || 'error')}) —
+      <a href="#" style="color:var(--gold)" onclick="loadThesis('${esc(sym)}');return false">retry</a>.</div>`;
+  }
 }
 function thesisHtml(j) {
   const sc = { Bullish: 'var(--green)', Constructive: 'var(--green)', Neutral: 'var(--gold)', Cautious: 'var(--red)', Bearish: 'var(--red)' }[j.stance] || 'var(--muted)';
@@ -5516,7 +6049,10 @@ async function loadEarningsPanel(sym) {
     if (!r.ok || j.error) throw new Error(j.error || 'no data');
     if (!j.next && (!j.rows || !j.rows.length)) throw new Error('no earnings data');
     el.innerHTML = earningsHtml(j);
-  } catch (e) { el.innerHTML = ''; }
+  } catch (e) {   // visible + retryable instead of silently vanishing
+    el.innerHTML = `<div class="ratio-key" style="margin-bottom:1.2rem">Earnings history unavailable right now (${esc(e.message || 'error')}) —
+      <a href="#" style="color:var(--gold)" onclick="loadEarningsPanel('${esc(sym)}');return false">retry</a>.</div>`;
+  }
 }
 function earningsHtml(j) {
   const cc = v => v == null ? 'var(--muted)' : v >= 0 ? 'var(--green)' : 'var(--red)';
@@ -5639,37 +6175,37 @@ async function loadManagement(sym) {
     if (!j.officers || !j.officers.length) {
       el.innerHTML = `<div class="mgmt-card">
         <div class="section-header"><h2 style="font-size:1.1rem">${ic('user')} Leadership &amp; Management</h2></div>
-        <p class="mgmt-empty">A verified executive list isn't available for <b>${company}</b> from the free data source. Search LinkedIn directly:</p>
-        <div class="mgmt-links"><a class="mgmt-li" href="${liSearch(company + ' leadership')}" target="_blank" rel="noopener">${liIcon()} ${company} on LinkedIn</a></div>
+        <p class="mgmt-empty">A verified executive list isn't available for <b>${esc(company)}</b> from the free data source. Search LinkedIn directly:</p>
+        <div class="mgmt-links"><a class="mgmt-li" href="${esc(liSearch(company + ' leadership'))}" target="_blank" rel="noopener">${liIcon()} ${esc(company)} on LinkedIn</a></div>
       </div>`;
       return;
     }
     // strip honorifics + degree suffixes for a cleaner LinkedIn match (display keeps the full name)
     const cleanName = n => n.replace(/^(Mr\.?|Ms\.?|Mrs\.?|Dr\.?)\s+/i, '').replace(/\s+(B\.E\.?|M\.Tech\.?|B\.Tech\.?|MBA|CA|Ph\.?D\.?)[.,\s]*$/i, '').trim();
-    const rows = j.officers.map(o => {
+    // C-SUITE DASHBOARD card grid (same visual as the curated pages) — live for every stock
+    const cards = j.officers.map(o => {
       const q = cleanName(o.name) + ' ' + company;
-      return `<div class="mgmt-row">
-        <div class="mgmt-av">${(o.name[0] || '?').toUpperCase()}</div>
-        <div class="mgmt-main">
-          <div class="mgmt-name">${o.name}</div>
-          <div class="mgmt-title">${o.title || '—'}${o.age ? ` · age ${o.age}` : ''}</div>
-        </div>
-        <div class="mgmt-links">
-          <a class="mgmt-li" href="${liSearch(q)}" target="_blank" rel="noopener" title="Find ${o.name} on LinkedIn">${liIcon()} LinkedIn</a>
-          <a class="mgmt-gl" href="${glSearch(q)}" target="_blank" rel="noopener" title="Google → LinkedIn profile">↗</a>
-        </div>
+      return `<div class="exec-card">
+        <div class="exec-avatar exec-fallback" style="background:${execHue(o.name)}">${esc(execInitials(o.name))}</div>
+        <div class="exec-name">${esc(o.name)}</div>
+        <div class="exec-title">${esc(o.title || '—')}${o.age ? ` · ${esc(o.age)} yrs` : ''}</div>
+        <span style="height:0"></span>
+        <a class="exec-li" href="${esc(liSearch(q))}" target="_blank" rel="noopener noreferrer" title="Find ${esc(o.name)} on LinkedIn">${LI_ICON} LinkedIn</a>
+        <a class="mgmt-gl" href="${esc(glSearch(q))}" target="_blank" rel="noopener" title="Google → LinkedIn profile" style="margin-top:.3rem">Google ↗</a>
       </div>`;
     }).join('');
     el.innerHTML = `<div class="mgmt-card">
       <div class="section-header" style="flex-wrap:wrap">
-        <h2 style="font-size:1.1rem">${ic('user')} Leadership &amp; Management</h2>
-        <span class="pf-note" style="margin-left:auto">${j.officers.length} key executives · via ${j.source || 'Yahoo'}</span>
+        <h2 style="font-size:1.1rem">${ic('user')} C-Suite &amp; Leadership Dashboard</h2>
+        <span class="ds-badge ds-live" style="vertical-align:middle">● LIVE · Yahoo Finance</span>
+        <span class="pf-note" style="margin-left:auto">${j.officers.length} key executives</span>
       </div>
-      <div class="mgmt-list">${rows}</div>
-      <p class="mgmt-note">Names &amp; titles are live from the fundamentals feed. The free data source doesn't publish verified LinkedIn URLs, so each <b>LinkedIn</b> button opens a people-search for that person at ${company} (the small ↗ runs a Google lookup) — accurate search links rather than guessed profiles.</p>
+      <div class="exec-grid">${cards}</div>
+      <p class="mgmt-note">Names &amp; titles are live from the fundamentals feed. The free data source doesn't publish verified LinkedIn URLs, so each <b>LinkedIn</b> button opens a people-search for that person at ${esc(company)} (Google ↗ runs a web lookup) — accurate search links rather than guessed profiles.</p>
     </div>`;
-  } catch (e) {
-    el.innerHTML = '';   // fail silently — management is a bonus panel
+  } catch (e) {   // visible + retryable instead of silently vanishing
+    el.innerHTML = `<div class="ratio-key" style="margin-bottom:1.2rem">C-Suite &amp; leadership data unavailable right now —
+      <a href="#" style="color:var(--gold)" onclick="loadManagement('${esc(sym)}');return false">retry</a>.</div>`;
   }
 }
 
@@ -5685,10 +6221,10 @@ async function loadSymbols() {
   if (!SYMBOLS.length) SYMBOLS = NIFTY50.map(s => ({ sym: s.sym, name: s.name, sector: s.sector }));
 }
 
-function acHighlight(text, q) {
+function acHighlight(text, q) {   // names come from remote NSE CSVs — escape around the <b> marker
   const i = text.toLowerCase().indexOf(q);
-  if (i < 0) return text;
-  return text.slice(0, i) + '<b>' + text.slice(i, i + q.length) + '</b>' + text.slice(i + q.length);
+  if (i < 0) return esc(text);
+  return esc(text.slice(0, i)) + '<b>' + esc(text.slice(i, i + q.length)) + '</b>' + esc(text.slice(i + q.length));
 }
 
 function attachAutocomplete(input, onSelect, onEnter) {
@@ -5713,12 +6249,12 @@ function attachAutocomplete(input, onSelect, onEnter) {
     active = -1;
     dd.innerHTML = items.map((s, i) => `
       <div class="ac-item" data-i="${i}">
-        <div class="ac-logo">${s.sym[0]}</div>
+        <div class="ac-logo">${esc(s.sym[0])}</div>
         <div class="ac-main">
           <div class="ac-sym">${acHighlight(s.sym, q)}</div>
           <div class="ac-name">${acHighlight(s.name, q)}</div>
         </div>
-        <div class="ac-tag">NSE<br>${s.sector || 'stock'}</div>
+        <div class="ac-tag">NSE<br>${esc(s.sector || 'stock')}</div>
       </div>`).join('');
     dd.classList.add('show');
   }

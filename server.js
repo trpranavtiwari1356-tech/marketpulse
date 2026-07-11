@@ -10,6 +10,20 @@ const path = require('path');
 const PORT = +process.env.PORT || 5173;   // override with PORT=xxxx to run a second instance
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
+// ─────────── hard-timeout fetch for EVERY upstream call (audit 10-Jul-2026) ───────────
+// A black-holed host (SNI-filtered ISP, blocked cloud IP) completes the TCP handshake but
+// never answers — a plain fetch() then hangs FOREVER, wedging a pool slot so a 500-stock
+// scan never finishes, and /api/pulse (which awaits allSettled) hangs with it. The Macro
+// page hit exactly this and got fetchJson+AbortController; fetchT generalizes that guard
+// to every Yahoo/NSE/TradingView/Trendlyne/Google call site.
+const FETCH_TIMEOUT_MS = 12000;
+async function fetchT(url, opts = {}, ms = FETCH_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
+  finally { clearTimeout(timer); }
+}
+
 // ─────────── stock master list (sym, name, sector, tier) ───────────
 // tier = smallest broad index the name belongs to (50/100/200/500) → drives universe filters.
 // Tickers default to sym+'.NS'; overrides handled below for special symbols.
@@ -117,6 +131,17 @@ function cacheSave(name, obj) {
   try { fs.mkdirSync(CACHE_DIR, { recursive: true }); fs.writeFileSync(path.join(CACHE_DIR, name + '.json'), JSON.stringify(obj)); }
   catch (e) { /* cache is best-effort */ }
 }
+// Evict oldest entries so long-lived caches can't grow without bound (audit 10-Jul-2026:
+// _tvCache keyed every distinct symbol-set FOREVER — a slow memory leak on a 512MB host).
+// Maps iterate in insertion order, so deleting from the front ≈ oldest-first.
+function capCache(store, max) {
+  if (store instanceof Map) {
+    while (store.size > max) store.delete(store.keys().next().value);
+  } else {
+    const keys = Object.keys(store);
+    if (keys.length > max) for (const k of keys.slice(0, keys.length - max)) delete store[k];
+  }
+}
 
 // ─────────── official NSE index constituents (real Nifty 50/100/200/500, Bank, IT) ───────────
 const NSE_LISTS = { 50: 'ind_nifty50list', 100: 'ind_nifty100list', 200: 'ind_nifty200list',
@@ -124,7 +149,7 @@ const NSE_LISTS = { 50: 'ind_nifty50list', 100: 'ind_nifty100list', 200: 'ind_ni
 async function fetchNseList(name) {
   for (const host of ['archives.nseindia.com', 'www1.nseindia.com']) {
     try {
-      const r = await fetch(`https://${host}/content/indices/${name}.csv`,
+      const r = await fetchT(`https://${host}/content/indices/${name}.csv`,
         { headers: { 'User-Agent': UA, 'Accept': 'text/csv,*/*', 'Referer': 'https://www.nseindia.com/' } });
       if (!r.ok) continue;
       const txt = await r.text();
@@ -156,8 +181,48 @@ async function loadConstituents() {
   STOCKS = built;
   if (lbank && lbank.length) BANK_SET = setOf(lbank);
   if (lit && lit.length)     IT_SET   = setOf(lit);
+  rebuildEquityExtra();   // keep the broad-search list de-duped against the refreshed Nifty 500
   cacheSave('constituents', { at: Date.now(), stocks: built, bank: [...BANK_SET], it: [...IT_SET] });
   console.log(`NSE constituents loaded: ${built.length} names (Nifty 500), ${BANK_SET.size} Bank, ${IT_SET.size} IT`);
+  return true;
+}
+
+// ─────────── full NSE equity master (~2000 listed symbols) — powers search + stock lookup ───────────
+// The Nifty 500 (STOCKS) still drives every scan / heatmap / breadth reading (they need liquid,
+// fundamentally-covered names). This broader list ONLY powers autocomplete and name→symbol
+// resolution, so ANY listed stock can be searched and opened in Stock Info. Sourced from NSE's
+// EQUITY_L.csv and cached to disk (survives restarts, works offline / on the free cloud host).
+let EQUITY_MASTER = [];     // [{ sym, name, yh }] — the whole listed universe
+let EQUITY_EXTRA  = [];     // EQUITY_MASTER minus names already in STOCKS (avoids duplicate hits)
+function rebuildEquityExtra() {
+  const have = new Set(STOCKS.map(s => s.sym));
+  EQUITY_EXTRA = EQUITY_MASTER.filter(e => !have.has(e.sym));
+}
+async function fetchEquityMaster() {
+  for (const host of ['archives.nseindia.com', 'www1.nseindia.com']) {
+    try {
+      const r = await fetchT(`https://${host}/content/equities/EQUITY_L.csv`,
+        { headers: { 'User-Agent': UA, 'Accept': 'text/csv,*/*', 'Referer': 'https://www.nseindia.com/' } });
+      if (!r.ok) continue;
+      const txt = await r.text();
+      // header: SYMBOL,NAME OF COMPANY,SERIES,DATE OF LISTING,PAID UP VALUE,MARKET LOT,ISIN NUMBER,FACE VALUE
+      const rows = txt.trim().split(/\r?\n/).slice(1).map(line => {
+        const p = line.split(',');
+        return { sym: (p[0] || '').trim(), name: (p[1] || '').trim().replace(/^"|"$/g, ''), series: (p[2] || '').trim() };
+      }).filter(x => x.sym && /^[A-Z0-9&.-]+$/.test(x.sym) && (!x.series || x.series === 'EQ' || x.series === 'BE'))
+        .map(x => ({ sym: x.sym, name: x.name, yh: TICKER_OVERRIDE[x.sym] || (x.sym + '.NS') }));
+      if (rows.length > 500) return rows;
+    } catch (e) { /* try next host */ }
+  }
+  return null;
+}
+async function loadEquityMaster() {
+  const rows = await fetchEquityMaster();
+  if (!rows) return false;
+  EQUITY_MASTER = rows;
+  rebuildEquityExtra();
+  cacheSave('equitymaster', { at: Date.now(), stocks: rows });
+  console.log(`NSE equity master loaded: ${rows.length} listed symbols (search universe)`);
   return true;
 }
 
@@ -178,7 +243,7 @@ async function yahooChart(ticker, interval, range) {
   for (const host of hosts) {
     try {
       const url = `https://${host}/v8/finance/chart/${encodeURIComponent(ticker)}?interval=${interval}&range=${range}&includePrePost=false&events=split`;
-      const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
+      const r = await fetchT(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
       if (!r.ok) continue;
       const j = await r.json();
       const res = j && j.chart && j.chart.result && j.chart.result[0];
@@ -367,27 +432,34 @@ function universe(uni) {
 function resolveQuery(raw) {
   const up = (raw || '').toUpperCase().trim();
   if (!up) return null;
-  // exact symbol / Yahoo-ticker match wins outright
-  const exact = STOCKS.find(s => s.sym === up || s.yh === up || s.yh === up + '.NS');
+  // exact symbol / Yahoo-ticker match wins outright — Nifty 500 first, then the broader NSE list
+  const exact = STOCKS.find(s => s.sym === up || s.yh === up || s.yh === up + '.NS')
+             || EQUITY_EXTRA.find(s => s.sym === up || s.yh === up || s.yh === up + '.NS');
   if (exact) return exact;
   const norm = up.replace(/[^A-Z0-9]/g, '');
   if (norm.length < 2) return null;
   let best = null, bestEff = 0;
-  for (const s of STOCKS) {
-    const nm = s.name.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const words = s.name.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
-    let score = 0;
-    if (nm === norm) score = 1000;                         // whole normalized name equals query
-    else if (words.includes(norm)) score = 800;            // a whole word equals query ("Infosys")
-    else if (s.sym.startsWith(norm)) score = 700;          // "SBI"→SBIN, "HDFC"→HDFCBANK
-    else if (nm.startsWith(norm)) score = 600;
-    else if (words.some(w => w.startsWith(norm))) score = 500;
-    else if (nm.includes(norm)) score = 100;               // last-resort substring
-    if (!score) continue;
-    // tie-break: prefer the larger / more prominent name (lower tier), then the shorter name
-    const eff = score * 1000 - (s.tier || 999) - nm.length / 1000;
-    if (eff > bestEff) { bestEff = eff; best = s; }
-  }
+  // tierBias = the tier used for names with no index tier (broad NSE list). Kept above 500 so a
+  // Nifty 500 name always wins a tie against a broad-list name with the same match strength.
+  const scan = (list, tierBias) => {
+    for (const s of list) {
+      const nm = s.name.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const words = s.name.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+      let score = 0;
+      if (nm === norm) score = 1000;                         // whole normalized name equals query
+      else if (words.includes(norm)) score = 800;            // a whole word equals query ("Infosys")
+      else if (s.sym.startsWith(norm)) score = 700;          // "SBI"→SBIN, "HDFC"→HDFCBANK
+      else if (nm.startsWith(norm)) score = 600;
+      else if (words.some(w => w.startsWith(norm))) score = 500;
+      else if (nm.includes(norm)) score = 100;               // last-resort substring
+      if (!score) continue;
+      // tie-break: prefer the larger / more prominent name (lower tier), then the shorter name
+      const eff = score * 1000 - (s.tier || tierBias) - nm.length / 1000;
+      if (eff > bestEff) { bestEff = eff; best = s; }
+    }
+  };
+  scan(STOCKS, 999);          // Nifty 500 — real tiers, so prominent names win ties
+  scan(EQUITY_EXTRA, 1200);   // whole listed universe — biased lower than any 500 tier
   return best;
 }
 
@@ -403,7 +475,8 @@ async function moverSnap(stock, lookback) {
   // date-anchored lookback (refCloses excludes the live session — see its comment)
   const refArr = refCloses(res);
   const ref = refArr.length >= lookback ? refArr[refArr.length - lookback] : null;
-  const ret = ref ? ((price - ref) / ref) * 100 : 0;
+  if (!ref) return { ...stock, error: true };   // too little history → exclude, don't fake a 0.00% (audit 10-Jul-2026)
+  const ret = ((price - ref) / ref) * 100;
   return { sym: stock.sym, name: stock.name, sector: stock.sector, price: +price.toFixed(2), ret: +ret.toFixed(2) };
 }
 // Persistent, stale-while-revalidate cache: a cached result is served INSTANTLY (even if a
@@ -621,6 +694,18 @@ const TREND_TTL = 5 * 60e3;
 const _trend = cacheLoad('trend').map || {};         // 'uni|tf|type|mas' -> { at, data }
 const _trendInflight = {};
 function trendKey(tf, uni, cfg) { return `${uni}|${tf}|${cfg.type}|${cfg.lens.join(',')}`; }
+const TREND_MAX_KEYS = 24;                           // each key holds a full universe scan — cap them
+function trimTrendCache() {
+  const keys = Object.keys(_trend);
+  if (keys.length <= TREND_MAX_KEYS) return;
+  keys.sort((a, b) => (_trend[a].at || 0) - (_trend[b].at || 0))
+    .slice(0, keys.length - TREND_MAX_KEYS).forEach(k => delete _trend[k]);
+}
+let _trendSaveTimer = null;
+function scheduleTrendSave() {                       // coalesce disk writes to at most one / 30s
+  if (_trendSaveTimer) return;
+  _trendSaveTimer = setTimeout(() => { _trendSaveTimer = null; cacheSave('trend', { map: _trend }); }, 30e3);
+}
 async function refreshTrend(tf, uni, cfg) {
   const key = trendKey(tf, uni, cfg);
   if (_trendInflight[key]) return _trendInflight[key];
@@ -632,7 +717,11 @@ async function refreshTrend(tf, uni, cfg) {
     const data = { tf, uni, interval, maType: cfg.type, maLens: cfg.lens, asOf: new Date().toISOString(),
       stocks: ok, failed: stocks.filter(s => s.error).map(s => s.sym) };
     _trend[key] = { at: Date.now(), data };
-    cacheSave('trend', { map: _trend });
+    // Cap + debounce (audit 10-Jul-2026): trend keys include USER-SUPPLIED MA configs, so an
+    // arbitrary ?mas= value minted a new permanent entry AND re-serialized the whole multi-MB
+    // map to disk on every refresh. Keep only the most recent 24 configs; save at most / 30s.
+    trimTrendCache();
+    scheduleTrendSave();
     return data;
   })().finally(() => { delete _trendInflight[key]; });
   _trendInflight[key] = job;
@@ -646,6 +735,144 @@ async function topTrend(tf, uni, cfg, force) {
     return entry.data;                                                                    // serve instantly
   }
   return refreshTrend(tf, uni, cfg);                                                       // cold → wait once
+}
+
+// ─────────── market breadth (200/20-DMA participation), non-blocking ───────────
+// Breadth only needs three numbers per stock (above 200-DMA?, above 20-DMA?, up today?), so
+// it runs a DEDICATED lightweight scan instead of the heavy heatmap snapshot: 1-year daily
+// candles (≈250 bars — enough for a true 200-DMA at half the 2-year payload) at higher
+// concurrency. On a constrained free host this brings the full Nifty-500 read from ~60s down
+// to well under 10s. It still reuses the heatmap's richer 1-Day scan for free when that cache
+// is already warm (Trend tab open), so no duplicate fetches in that case.
+async function breadthSnap(stock) {
+  const res = await yahooChart(stock.yh, '1d', '1y');   // ≈250 daily bars — covers the 200-DMA
+  if (!res) return null;
+  const closes = adjustedCloses(res);                   // split-adjusted, same math as snapshot()
+  if (closes.length < 20) return null;                  // need at least the short MA
+  const meta = res.meta || {};
+  const price = (meta.regularMarketPrice != null) ? meta.regularMarketPrice : closes[closes.length - 1];
+  const s200 = sma(closes, 200), s20 = sma(closes, 20);
+  const refArr = refCloses(res);                        // date-anchored prev session (excludes live bar)
+  const prev = refArr.length ? refArr[refArr.length - 1] : null;
+  const ret = prev ? ((price - prev) / prev) * 100 : 0;
+  return { above200: s200 != null && price >= s200, above20: s20 != null && price >= s20, ret };
+}
+
+// Batched spark fetch: Yahoo's sparkline endpoint returns chart-shaped responses (meta +
+// timestamp + closes) for up to 20 SYMBOLS PER CALL (21+ → HTTP 400), no crumb needed.
+// The whole Nifty 500 costs 25 HTTP calls instead of 500 — the difference between a
+// minute-plus cold scan on a throttled free host and a few seconds.
+async function yahooSpark(symbols, interval, range) {
+  const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+  for (const host of hosts) {
+    try {
+      const url = `https://${host}/v7/finance/spark?symbols=${symbols.map(encodeURIComponent).join(',')}&interval=${interval}&range=${range}`;
+      const r = await fetchT(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const out = {};
+      for (const item of (j && j.spark && j.spark.result) || []) {
+        const res = item && item.response && item.response[0];
+        if (res && res.indicators) out[item.symbol] = res;
+      }
+      if (Object.keys(out).length) return out;
+    } catch (e) { /* try next host */ }
+  }
+  return {};
+}
+
+// Breadth read from a spark series. Spark carries NO split events, so a stock whose raw
+// closes still contain an unadjusted split would get a garbage 200-DMA. Guard: any
+// close-to-close jump beyond NSE's daily circuit band (> +30% / < −16%) is treated as a
+// possible split discontinuity → {discont:true} → that stock is re-fetched individually
+// via breadthSnap(), which split-adjusts properly. False positives (genuine crash/rally
+// days) just cost one extra chart call, so the net is identical accuracy to the per-stock
+// path at ~1/20th the request count.
+function breadthFromSpark(res) {
+  const raw = (((res.indicators || {}).quote || [])[0] || {}).close || [];
+  const closes = raw.filter(v => v != null && !isNaN(v));
+  if (closes.length < 20) return null;                  // need at least the short MA
+  for (let i = 1; i < closes.length; i++) {
+    const r = closes[i] / closes[i - 1];
+    if (r > 1.30 || r < 0.84) return { discont: true };
+  }
+  const meta = res.meta || {};
+  const price = (meta.regularMarketPrice != null) ? meta.regularMarketPrice : closes[closes.length - 1];
+  const s200 = sma(closes, 200), s20 = sma(closes, 20);
+  const refArr = refCloses(res);                        // spark res is chart-shaped → same date-anchored math
+  const prev = refArr.length ? refArr[refArr.length - 1] : closes[closes.length - 2];
+  const ret = prev ? ((price - prev) / prev) * 100 : 0;
+  return { above200: s200 != null && price >= s200, above20: s20 != null && price >= s20, ret };
+}
+const BREADTH_TTL = 5 * 60e3;
+const _breadthCache = {};       // uni -> { at, data }
+const _breadthInflight = {};
+async function refreshBreadth(uni) {
+  if (_breadthInflight[uni]) return _breadthInflight[uni];
+  const job = (async () => {
+    const stocks = universe(uni);
+    // 1) batched spark scan: 20 symbols/call, 5 calls in flight → Nifty 500 in ~3s
+    const chunks = [];
+    for (let i = 0; i < stocks.length; i += 20) chunks.push(stocks.slice(i, i + 20));
+    const maps = await pool(chunks, 5, ch => yahooSpark(ch.map(s => s.yh), '1d', '1y'));
+    const bySym = Object.assign({}, ...maps);
+    // 2) evaluate; split-suspect or missing names fall back to the accurate per-stock fetch
+    const snaps = [], retry = [];
+    for (const s of stocks) {
+      const b = bySym[s.yh] ? breadthFromSpark(bySym[s.yh]) : null;
+      if (b && !b.discont) snaps.push(b);
+      else retry.push(s);
+    }
+    if (retry.length) snaps.push(...(await pool(retry, 20, breadthSnap)).filter(Boolean));
+    if (!snaps.length) throw new Error('no data');
+    const n = snaps.length;
+    const a200 = snaps.filter(s => s.above200).length, a20 = snaps.filter(s => s.above20).length;
+    const adv = snaps.filter(s => s.ret > 0).length;
+    const p200 = Math.round(a200 / n * 100), p20 = Math.round(a20 / n * 100);
+    const data = { n, pct200: p200, pct20: p20, adv, dec: n - adv,
+      regime: p200 >= 60 ? 'Bullish' : p200 >= 40 ? 'Neutral' : 'Bearish',
+      asOf: new Date().toISOString(), uni };
+    _breadthCache[uni] = { at: Date.now(), data };
+    return data;
+  })().finally(() => { delete _breadthInflight[uni]; });
+  _breadthInflight[uni] = job;
+  return job;
+}
+// Non-blocking: returns {breadth} if a fresh reading exists, else kicks off the scan in the
+// BACKGROUND and returns {warming:true} immediately — the client polls / falls back to a
+// smaller universe rather than hanging. `force` starts a fresh scan (Refresh button).
+// Two possible sources, served FRESHEST-FIRST so neither can shadow the other:
+//   1. the dedicated batched breadth scan (_breadthCache)
+//   2. the heatmap's richer 1-Day trend scan (_trend) — free, zero extra fetches
+// A forced re-scan timestamps _breadthForcedAt so pre-existing readings from EITHER source
+// are ineligible until a scan that STARTED after the Refresh click lands (~3-5s).
+const _breadthForcedAt = {};   // uni -> ts of the last forced re-scan
+function computeBreadth(uni, force) {
+  if (force) {
+    _breadthForcedAt[uni] = Date.now();
+    delete _breadthCache[uni];
+    refreshBreadth(uni).catch(() => {});   // fresh scan in background, never await
+    return { warming: true, uni };
+  }
+  const floor = _breadthForcedAt[uni] || 0;
+  const be = _breadthCache[uni];
+  const te = _trend[trendKey('1 Day', uni, parseMaConfig(null, null))];
+  const teOk = te && te.data && (te.data.stocks || []).length &&
+    Date.now() - te.at <= TREND_TTL && te.at >= floor;
+  if (teOk && (!be || te.at >= be.at)) {
+    const st = te.data.stocks;
+    const above = len => st.filter(s => { const m = (s.mas || []).find(x => x.len === len); return m && m.above; }).length;
+    const adv = st.filter(s => s.ret > 0).length;
+    const p200 = Math.round(above(200) / st.length * 100), p20 = Math.round(above(20) / st.length * 100);
+    return { breadth: { n: st.length, pct200: p200, pct20: p20, adv, dec: st.length - adv,
+      regime: p200 >= 60 ? 'Bullish' : p200 >= 40 ? 'Neutral' : 'Bearish', asOf: te.data.asOf, uni } };
+  }
+  if (be && be.at >= floor) {
+    if (Date.now() - be.at > BREADTH_TTL) refreshBreadth(uni).catch(() => {});   // revalidate stale
+    return { breadth: be.data };
+  }
+  refreshBreadth(uni).catch(() => {});     // cold (or awaiting post-force data) → warm in background
+  return { warming: true, uni };
 }
 
 // ─────────── live indices ───────────
@@ -676,9 +903,13 @@ async function indexSnap(name, ticker) {
 // ─────────── GOLD = MCX-style ₹/10g, built from COMEX (GC=F) × live USD/INR ───────────
 // Free Yahoo data has no MCX futures feed, so we replicate the landed-cost math instead:
 // COMEX troy-oz price → grams → ×10 → ×USDINR → ×duty/GST/futures-basis premium.
-// Premium calibrated once against a live MCX quote (₹146,565/10g vs ₹126,273 raw on
-// GC=F 4145.8 + USDINR 94.735) → 1.1607. Approximate; will drift if duty/GST rates change.
-const GOLD_MCX_PREMIUM = 1.1607;
+// INDICATIVE domestic landed price = COMEX (GC=F, USD/oz) × USD/INR × a static premium that
+// stands in for import duty + the domestic MCX basis. It is NOT the live MCX contract tick:
+// COMEX and MCX trade different sessions, so the level drifts ~1% and the intraday % can even
+// diverge in sign. The premium itself floats with duty/demand — measured at 1.1607 on an earlier
+// COMEX print but only 1.145 against MCX ₹1,45,050/10g on 09-Jul-2026 (raw ₹1,26,706). We use the
+// more recent 1.145; treat the number as an indicative reference and recalibrate periodically.
+const GOLD_MCX_PREMIUM = 1.145;
 const TROY_OZ_TO_GRAM = 31.1034768;
 async function mcxGoldSnap() {
   const [goldRes, fxRes] = await Promise.all([
@@ -690,9 +921,12 @@ async function mcxGoldSnap() {
   const fxCloses = ((fxRes.indicators.quote[0] || {}).close || []).filter(v => v != null && !isNaN(v));
   const goldMeta = goldRes.meta || {}, fxMeta = fxRes.meta || {};
   const goldNow = goldMeta.regularMarketPrice != null ? goldMeta.regularMarketPrice : goldCloses[goldCloses.length - 1];
-  const goldPrev = goldCloses[goldCloses.length - 2];
+  // date-anchored previous session close (refCloses), same as every equity/index quote —
+  // the raw [len-2] index shifts a whole session whenever Yahoo's EOD bar lags (audit 10-Jul-2026)
+  const goldRef = refCloses(goldRes), fxRef = refCloses(fxRes);
+  const goldPrev = goldRef[goldRef.length - 1] || goldCloses[goldCloses.length - 2];
   const fxNow = fxMeta.regularMarketPrice != null ? fxMeta.regularMarketPrice : fxCloses[fxCloses.length - 1];
-  const fxPrev = fxCloses[fxCloses.length - 2];
+  const fxPrev = fxRef[fxRef.length - 1] || fxCloses[fxCloses.length - 2];
   const per10g = (usdPerOz, inrPerUsd) => (usdPerOz / TROY_OZ_TO_GRAM) * 10 * inrPerUsd * GOLD_MCX_PREMIUM;
   const valueNow = per10g(goldNow, fxNow);
   const valuePrev = (goldPrev && fxPrev) ? per10g(goldPrev, fxPrev) : null;
@@ -754,7 +988,7 @@ async function tvAtr(sym) {
   const hit = _atrCache.get(sym);
   if (hit && Date.now() - hit.at < 5 * 60e3) return hit.data;
   const body = JSON.stringify({ symbols: { tickers: ['NSE:' + sym] }, columns: ['ATR', 'close', 'Volatility.D'] });
-  const r = await fetch('https://scanner.tradingview.com/india/scan', {
+  const r = await fetchT('https://scanner.tradingview.com/india/scan', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UA }, body,
   });
   if (!r.ok) throw new Error('TradingView scanner HTTP ' + r.status);
@@ -764,6 +998,7 @@ async function tvAtr(sym) {
   const data = { sym, atr: +d[0].toFixed(2), close: d[1] != null ? +d[1] : null,
     volD: d[2] != null ? +d[2].toFixed(2) : null, source: 'tradingview' };
   _atrCache.set(sym, { at: Date.now(), data });
+  capCache(_atrCache, 300);
   return data;
 }
 
@@ -793,7 +1028,7 @@ function newsUrl(q) {
   return `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-IN&gl=IN&ceid=IN:en`;
 }
 async function fetchNews(q) {
-  const r = await fetch(newsUrl(q), { headers: { 'User-Agent': UA, 'Accept': 'application/rss+xml, application/xml, text/xml' } });
+  const r = await fetchT(newsUrl(q), { headers: { 'User-Agent': UA, 'Accept': 'application/rss+xml, application/xml, text/xml' } });
   if (!r.ok) throw new Error('HTTP ' + r.status);
   const xml = await r.text();
   const items = [];
@@ -858,6 +1093,59 @@ async function memberSnap(sym, weight) {
     weight: weight != null ? weight : null,
     contribution: weight != null ? +(weight * pct / 100).toFixed(3) : null, // approx index %-points contribution
   };
+}
+// Index drill-down page, SWR-cached (audit 10-Jul-2026): this endpoint had NO cache, so every
+// click on a NIFTY 500/200/100 card refetched up to 500 member charts and blocked ~1 min.
+// Now it serves the cached page instantly and revalidates in the background like every other engine.
+const INDEX_TTL = 5 * 60e3;
+const _indexCache = {};        // name -> { at, data }
+const _indexInflight = {};
+async function refreshIndexPage(name) {
+  if (_indexInflight[name]) return _indexInflight[name];
+  const job = (async () => {
+    const def = INDEX_DEFS[name];
+    const idxRes = await yahooChart(def.yh, '1d', '5d');
+    let index = null;
+    if (idxRes) {
+      const m = idxRes.meta || {};
+      const c = ((idxRes.indicators.quote[0] || {}).close || []).filter(v => v != null && !isNaN(v));
+      const price = m.regularMarketPrice != null ? m.regularMarketPrice : c[c.length - 1];
+      // date-anchored previous session close (see refCloses). Raw c[len-2] shifts a whole day
+      // when today's daily bar hasn't formed yet, which flipped the headline's sign & magnitude
+      // (e.g. Nifty 50 showed −1.79% here while the home card & its own members read +0.34%).
+      const refArr = refCloses(idxRes);
+      const prev = refArr[refArr.length - 1] || c[c.length - 2];
+      index = {
+        value: price, change: prev ? +(price - prev).toFixed(2) : 0, pct: prev ? +(((price - prev) / prev) * 100).toFixed(2) : 0,
+        dayHigh: m.regularMarketDayHigh, dayLow: m.regularMarketDayLow, week52High: m.fiftyTwoWeekHigh, week52Low: m.fiftyTwoWeekLow,
+        volume: m.regularMarketVolume,
+      };
+    }
+    let memberList = def.weighted || universe(name).map(s => [s.sym, null]);
+    // the weighted lists only carry the TOP names by weight (approx weights) — for indices
+    // whose official constituents we track, append the remaining members with weight=null
+    // so the drill-down shows ALL 50/14/10 names, not just the top-30.
+    if (def.weighted && ['Nifty 50', 'Bank Nifty', 'Nifty IT'].includes(name)) {
+      const have = new Set(memberList.map(([s]) => s));
+      for (const s of universe(name)) if (!have.has(s.sym)) memberList = memberList.concat([[s.sym, null]]);
+    }
+    const members = (await pool(memberList, 10, ([sym, w]) => memberSnap(sym, w))).filter(m => !m.error);
+    if (def.weighted) members.sort((a, b) => (Math.abs(b.contribution) || 0) - (Math.abs(a.contribution) || 0) || b.pct - a.pct);
+    else members.sort((a, b) => b.pct - a.pct);
+    const data = { name, yahoo: def.yh, weighted: !!def.weighted, index, members, asOf: new Date().toISOString() };
+    _indexCache[name] = { at: Date.now(), data };
+    return data;
+  })().finally(() => { delete _indexInflight[name]; });
+  _indexInflight[name] = job;
+  return job;
+}
+async function indexPage(name) {
+  const entry = _indexCache[name];
+  if (entry) {
+    if (Date.now() - entry.at > INDEX_TTL) refreshIndexPage(name).catch(() => {});   // revalidate in bg
+    return entry.data;                                                               // serve instantly
+  }
+  return refreshIndexPage(name);                                                      // cold → wait once
 }
 
 // ─────────── candlestick OHLC + rolling MA overlays ───────────
@@ -1062,10 +1350,10 @@ async function fetchSwot(sym) {
   const hit = _swotCache.get(sym);
   if (hit && Date.now() - hit.at < SWOT_TTL) return hit.data;
   const url = `https://trendlyne.com/web-widget/swot-widget/Poppins/${encodeURIComponent(sym)}/?posCol=00A25B&primaryCol=006AFF&negCol=EB3B00&neuCol=F7941E`;
-  const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*' } });
+  const r = await fetchT(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*' } });
   if (!r.ok) throw new Error('Trendlyne HTTP ' + r.status);
   const data = parseSwotWidget(await r.text(), sym);
-  if (data.total > 0) _swotCache.set(sym, { at: Date.now(), data });   // never cache an empty/miss
+  if (data.total > 0) { _swotCache.set(sym, { at: Date.now(), data }); capCache(_swotCache, 300); }   // never cache an empty/miss
   return data;
 }
 
@@ -1074,14 +1362,14 @@ async function fetchSwot(sym) {
 // (price, 50/200-DMA, 52-week range, momentum, volatility) is IDENTICAL to the user's
 // TradingView reference — this also sidesteps Yahoo's split-adjustment inconsistencies on
 // recently-split names (e.g. TRENT, whose Yahoo 200-DMA is wrong). One batched call/portfolio.
-const TV_COLS = ['close', 'change', 'SMA50', 'SMA200', 'price_52_week_high', 'price_52_week_low', 'Perf.1M', 'Perf.3M', 'Perf.Y', 'Volatility.D', 'beta_1_year', 'sector', 'description'];
+const TV_COLS = ['close', 'change', 'SMA50', 'SMA200', 'price_52_week_high', 'price_52_week_low', 'Perf.1M', 'Perf.3M', 'Perf.Y', 'Volatility.D', 'beta_1_year', 'price_earnings_ttm', 'sector', 'description'];
 const _tvCache = new Map();                                   // key = sorted symbol set -> { at, map }
 async function tvScan(symbols) {
   const key = [...symbols].sort().join(',');
   const hit = _tvCache.get(key);
   if (hit && Date.now() - hit.at < 60e3) return hit.map;       // 60s cache for repeat hits
   const body = JSON.stringify({ symbols: { tickers: symbols.map(s => 'NSE:' + s) }, columns: TV_COLS });
-  const r = await fetch('https://scanner.tradingview.com/india/scan', {
+  const r = await fetchT('https://scanner.tradingview.com/india/scan', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UA }, body,
   });
   if (!r.ok) throw new Error('TradingView scanner HTTP ' + r.status);
@@ -1092,6 +1380,7 @@ async function tvScan(symbols) {
     map[(row.s || '').replace('NSE:', '')] = o;
   }
   _tvCache.set(key, { at: Date.now(), map });
+  capCache(_tvCache, 40);
   return map;
 }
 // Fundamental-quality pillar: distils the live forensic scores (Piotroski F, Altman Z″,
@@ -1111,6 +1400,7 @@ async function holdingSentiment(sym) {
   const j = await analyzeSentiment(st.name && st.name !== sym ? st.name : sym);
   const data = { score10: j.score10, label: j.label, scored: j.scored, basis: j.basis };
   _pfSentiCache.set(sym, { at: Date.now(), data });
+  capCache(_pfSentiCache, 300);
   return data;
 }
 // Trendlyne SWOT counts per holding (fetchSwot has its own 30-min cache) — advisory flag input
@@ -1136,15 +1426,35 @@ async function peerPerfBySector(sectorList) {
 }
 
 const BANKISH_RE = /bank|nbfc|financ|insurance/i;
+// NSE tags EVERY financial name — real lenders/insurers AND capital-market infrastructure
+// (exchanges, depositories, registrars, brokers, AMCs, rating agencies) — with the single macro
+// sector "Financial Services". Generic statement ratios (op-margin, D/E, interest cover) are
+// meaningless only for the lenders/insurers; for the capital-market names they're perfectly valid.
+// Sector text can't separate the two, so we curate the non-lenders and let them through.
+// (IIFL is deliberately absent — the NSE symbol "IIFL" is IIFL Finance, an NBFC/lender.)
+const NON_LENDER_FIN = new Set([
+  'BSE', 'MCX', 'CDSL', 'IEX',                                   // exchanges & depositories
+  'CAMS', 'KFINTECH',                                           // registrars / transfer agents
+  'ANGELONE', 'MOTILALOFS', '360ONE', 'NUVAMA', 'ANANDRATHI', 'PRUDENT',  // brokers / wealth
+  'HDFCAMC', 'NAM-INDIA', 'ABSLAMC', 'UTIAMC',                  // asset managers
+  'CRISIL', 'ICRA', 'CARERATING',                              // rating agencies
+]);
+function isLenderOrInsurer(sym, sector) {
+  if (sym && NON_LENDER_FIN.has(sym)) return false;   // capital-market name → standard ratios apply
+  return BANKISH_RE.test(sector || '');
+}
 async function fundamentalsQuality(sym, sector) {
-  if (BANKISH_RE.test(sector || '')) return { quality: null, note: 'bank' };
+  if (isLenderOrInsurer(sym, sector)) return { quality: null, note: 'bank' };
   try {
     const ticker = TICKER_OVERRIDE[sym] || sym + '.NS';
     const data = await computeRatios(ticker);
     const f = data && data.forensics;
     if (!f) return { quality: null, note: 'no-data' };
     const parts = [];
-    if (f.piotroski) parts.push([0.55, f.piotroski.score / 9 * 100]);
+    // score over EVALUABLE checks (see computeForensics) — /9 punished sparse filings;
+    // skip the pillar entirely when fewer than 5 checks had data to judge on
+    if (f.piotroski && (f.piotroski.evaluable == null || f.piotroski.evaluable >= 5))
+      parts.push([0.55, f.piotroski.score / (f.piotroski.evaluable || 9) * 100]);
     if (f.altman) parts.push([0.25, f.altman.zone === 'good' ? 100 : f.altman.zone === 'avg' ? 55 : 10]);
     if (f.earningsQuality) parts.push([0.20, f.earningsQuality.flag === 'good' ? 100 : f.earningsQuality.flag === 'avg' ? 55 : 10]);
     if (!parts.length) return { quality: null, note: 'no-data' };
@@ -1152,6 +1462,7 @@ async function fundamentalsQuality(sym, sector) {
     return {
       quality: Math.round(parts.reduce((a, p) => a + p[0] * p[1], 0) / wsum),
       fscore: f.piotroski ? f.piotroski.score : null,
+      feval: f.piotroski ? (f.piotroski.evaluable != null ? f.piotroski.evaluable : 9) : null,
       z: f.altman ? f.altman.z : null, zZone: f.altman ? f.altman.zone : null,
       accrualsFlag: f.earningsQuality ? f.earningsQuality.flag : null,
     };
@@ -1195,7 +1506,7 @@ function scoreHolding(h, tv, fund, extra) {
     fromHigh: hi52 ? +((price - hi52) / hi52 * 100).toFixed(1) : null, fromLow: lo52 ? +((price - lo52) / lo52 * 100).toFixed(1) : null,
     ret1m: ret1m != null ? +ret1m.toFixed(1) : null, ret3m: ret3m != null ? +ret3m.toFixed(1) : null, ret1y: ret1y != null ? +ret1y.toFixed(1) : null,
     vol: vol != null ? +vol.toFixed(1) : null, beta,
-    quality: q, fscore: fund ? fund.fscore : null, z: fund ? fund.z : null, zZone: fund ? fund.zZone : null,
+    quality: q, fscore: fund ? fund.fscore : null, feval: fund ? fund.feval : null, z: fund ? fund.z : null, zZone: fund ? fund.zZone : null,
     accrualsFlag: fund ? fund.accrualsFlag : null, qualityNote: fund ? fund.note : null,
     peerPct, senti: (extra && extra.senti) || null, swot: (extra && extra.swot) || null,
     sub: { trend: trendScore, momentum: Math.round(momScore), range: Math.round(rangePos), risk: Math.round(riskScore), quality: q }, composite,
@@ -1289,7 +1600,8 @@ async function analyzePortfolio(holdings) {
   if (weightedVol >= 35) flags.push({ tone: 'warn', text: `High volatility — weighted ~${weightedVol.toFixed(0)}% annualised` });
   if (weightedBeta != null && weightedBeta >= 1.25) flags.push({ tone: 'warn', text: `High market sensitivity — weighted beta ${weightedBeta}: the portfolio amplifies index moves ~${Math.round((weightedBeta - 1) * 100)}%` });
   if (topRisk.riskShare >= 40 && rows.length > 2) flags.push({ tone: 'warn', text: `${topRisk.sym} alone drives ~${Math.round(topRisk.riskShare)}% of portfolio volatility` });
-  const weakFund = rows.filter(r => r.fscore != null && r.fscore <= 3);
+  // pass-RATE based (≤ 3-of-9 equivalent) and only with enough evaluable checks to judge
+  const weakFund = rows.filter(r => r.fscore != null && (r.feval == null || r.feval >= 5) && r.fscore / (r.feval || 9) <= 3 / 9);
   if (weakFund.length) flags.push({ tone: 'bad', text: `Weak fundamentals (Piotroski F ≤ 3): ${weakFund.map(r => `${r.sym} (F${r.fscore})`).join(', ')}` });
   const distress = rows.filter(r => r.zZone === 'weak');
   if (distress.length) flags.push({ tone: 'bad', text: `Balance-sheet distress zone (Altman Z″): ${distress.map(r => `${r.sym} (Z ${r.z})`).join(', ')}` });
@@ -1306,7 +1618,7 @@ async function analyzePortfolio(holdings) {
   rows.forEach(r => {
     if (r.weight >= 35) r.action = { verb: 'TRIM', reason: `${r.weight}% in one name — concentration risk${r.composite < 55 ? ` on a ${r.composite}-score holding` : ''}` };
     else if (r.weight >= 20 && r.composite < 55) r.action = { verb: 'TRIM', reason: `${r.weight}% weight on a ${r.composite}-score holding` };
-    else if (r.composite < 40) r.action = { verb: 'REVIEW', reason: `weak composite ${r.composite}` + (r.fscore != null && r.fscore <= 3 ? `, weak fundamentals (F${r.fscore})` : '') + (!r.above200 ? ', below 200-DMA' : '') };
+    else if (r.composite < 40) r.action = { verb: 'REVIEW', reason: `weak composite ${r.composite}` + (r.fscore != null && (r.feval == null || r.feval >= 5) && r.fscore / (r.feval || 9) <= 3 / 9 ? `, weak fundamentals (F${r.fscore})` : '') + (!r.above200 ? ', below 200-DMA' : '') };
     else if (r.composite >= 72 && r.weight < 8) r.action = { verb: 'STRONG', reason: `scores ${r.composite} but is only ${r.weight}% of the portfolio — strongest candidate if adding` };
     else r.action = null;
   });
@@ -1334,12 +1646,12 @@ let _yCrumb = null, _yCookie = null, _yCrumbAt = 0;
 async function yahooCrumb() {
   if (_yCrumb && _yCookie && Date.now() - _yCrumbAt < 3600e3) return { crumb: _yCrumb, cookie: _yCookie };
   try {
-    const r1 = await fetch('https://fc.yahoo.com/', { headers: { 'User-Agent': UA } });
+    const r1 = await fetchT('https://fc.yahoo.com/', { headers: { 'User-Agent': UA } });
     const sc = typeof r1.headers.getSetCookie === 'function'
       ? r1.headers.getSetCookie()
       : (r1.headers.get('set-cookie') ? [r1.headers.get('set-cookie')] : []);
     const cookie = sc.map(c => c.split(';')[0]).join('; ');
-    const r2 = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', { headers: { 'User-Agent': UA, 'Cookie': cookie } });
+    const r2 = await fetchT('https://query1.finance.yahoo.com/v1/test/getcrumb', { headers: { 'User-Agent': UA, 'Cookie': cookie } });
     const crumb = (await r2.text()).trim();
     if (crumb && !crumb.includes('<') && crumb.length < 40) { _yCrumb = crumb; _yCookie = cookie; _yCrumbAt = Date.now(); return { crumb, cookie }; }
   } catch (e) { /* fall through → null */ }
@@ -1360,7 +1672,7 @@ async function yahooTimeseries(ticker) {
   for (const host of ['query1.finance.yahoo.com', 'query2.finance.yahoo.com']) {
     try {
       const url = `https://${host}/ws/fundamentals-timeseries/v1/finance/timeseries/${encodeURIComponent(ticker)}?symbol=${encodeURIComponent(ticker)}&type=${type}&period1=${p1}&period2=${p2}&merge=false`;
-      const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
+      const r = await fetchT(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
       if (!r.ok) continue;
       const j = await r.json();
       const arr = j && j.timeseries && j.timeseries.result;
@@ -1375,7 +1687,7 @@ async function yahooKeyStats(ticker) {
   for (const host of ['query1.finance.yahoo.com', 'query2.finance.yahoo.com']) {
     try {
       const url = `https://${host}/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=defaultKeyStatistics,summaryDetail&crumb=${encodeURIComponent(auth.crumb)}`;
-      const r = await fetch(url, { headers: { 'User-Agent': UA, 'Cookie': auth.cookie, 'Accept': 'application/json' } });
+      const r = await fetchT(url, { headers: { 'User-Agent': UA, 'Cookie': auth.cookie, 'Accept': 'application/json' } });
       if (!r.ok) continue;
       const j = await r.json();
       const res = j && j.quoteSummary && j.quoteSummary.result && j.quoteSummary.result[0];
@@ -1408,23 +1720,33 @@ function ebitOf(d) {
   if (d.PretaxIncome != null && d.InterestExpense != null) return d.PretaxIncome + Math.abs(d.InterestExpense);
   return null;
 }
+// Operating margin wants OPERATING income specifically — ebitOf's Pretax+Interest fallback
+// sweeps one-off/non-operating gains in (caught live: IDEA showed a 125% "operating margin"
+// from an AGR-style writeback), so for the margin we prefer the true operating line.
+function opIncomeOf(d) {
+  if (d.OperatingIncome != null) return d.OperatingIncome;
+  return ebitOf(d);
+}
 // ratio definitions: f() returns null when a required line item is absent
 // (this is how bank-irrelevant ratios like Current Ratio auto-drop out).
+// SIGN GUARDS (audit 10-Jul-2026): ratios whose denominator can flip sign return null when it
+// does — a negative-equity company (IDEA) showed ROE +39% (neg÷neg) and D/E −5.4 rated "good".
+// An honest "not computable" beats a wrong number on a trading tool.
 const RATIO_DEFS = [
   { name: 'Return on Equity (ROE)', cat: 'Profitability', unit: '%', ideal: '> 15%', higher: true, good: 15, weak: 8,
-    f: d => (d.NetIncome != null && d.StockholdersEquity) ? d.NetIncome / d.StockholdersEquity * 100 : null },
+    f: d => (d.NetIncome != null && d.StockholdersEquity > 0) ? d.NetIncome / d.StockholdersEquity * 100 : null },
   { name: 'Return on Assets (ROA)', cat: 'Profitability', unit: '%', ideal: '> 5% (banks > 1.5%)', higher: true, good: 5, weak: 2,
-    f: d => (d.NetIncome != null && d.TotalAssets) ? d.NetIncome / d.TotalAssets * 100 : null },
+    f: d => (d.NetIncome != null && d.TotalAssets > 0) ? d.NetIncome / d.TotalAssets * 100 : null },
   { name: 'ROCE', cat: 'Profitability', unit: '%', ideal: '> 15%', higher: true, good: 15, weak: 8,
-    f: d => { const e = ebitOf(d), cap = (d.TotalAssets != null && d.CurrentLiabilities != null) ? d.TotalAssets - d.CurrentLiabilities : null; return (e != null && cap) ? e / cap * 100 : null; } },
+    f: d => { const e = ebitOf(d), cap = (d.TotalAssets != null && d.CurrentLiabilities != null) ? d.TotalAssets - d.CurrentLiabilities : null; return (e != null && cap > 0) ? e / cap * 100 : null; } },
   { name: 'Net Profit Margin', cat: 'Profitability', unit: '%', ideal: '> 10%', higher: true, good: 12, weak: 5,
-    f: d => (d.NetIncome != null && d.TotalRevenue) ? d.NetIncome / d.TotalRevenue * 100 : null },
+    f: d => (d.NetIncome != null && d.TotalRevenue > 0) ? d.NetIncome / d.TotalRevenue * 100 : null },
   { name: 'Operating (EBIT) Margin', cat: 'Profitability', unit: '%', ideal: '> 15%', higher: true, good: 15, weak: 7,
-    f: d => { const e = ebitOf(d); return (e != null && d.TotalRevenue) ? e / d.TotalRevenue * 100 : null; } },
+    f: d => { const e = opIncomeOf(d); return (e != null && d.TotalRevenue > 0) ? e / d.TotalRevenue * 100 : null; } },
   { name: 'Current Ratio', cat: 'Liquidity & Solvency', unit: 'x', ideal: '1.5 – 3.0', higher: true, good: 1.5, weak: 1.0,
-    f: d => (d.CurrentAssets != null && d.CurrentLiabilities) ? d.CurrentAssets / d.CurrentLiabilities : null },
+    f: d => (d.CurrentAssets != null && d.CurrentLiabilities > 0) ? d.CurrentAssets / d.CurrentLiabilities : null },
   { name: 'Debt-to-Equity', cat: 'Liquidity & Solvency', unit: 'x', ideal: '< 0.50', higher: false, good: 0.5, weak: 1.0,
-    f: d => (d.TotalDebt != null && d.StockholdersEquity) ? d.TotalDebt / d.StockholdersEquity : null },
+    f: d => (d.TotalDebt != null && d.StockholdersEquity > 0) ? d.TotalDebt / d.StockholdersEquity : null },
   { name: 'Interest Coverage', cat: 'Liquidity & Solvency', unit: 'x', ideal: '> 4x', higher: true, good: 4, weak: 1.5,
     f: d => { const e = ebitOf(d); return (e != null && d.InterestExpense) ? e / Math.abs(d.InterestExpense) : null; } },
   { name: 'Asset Turnover', cat: 'Efficiency', unit: 'x', ideal: '> 0.5', higher: true, good: 0.5, weak: 0.3,
@@ -1447,24 +1769,35 @@ function computeForensics(byYear, allYears) {
   if (!T) return null;
   const out = { fy: allYears[allYears.length - 1] };
 
-  // Piotroski F-Score (0–9): needs current + prior year
+  // Piotroski F-Score (0–9): needs current + prior year.
+  // N/A-AWARE (audit 10-Jul-2026): a check whose line items Yahoo doesn't carry is marked
+  // {na:true} and EXCLUDED from the verdict, instead of silently counting as a failure —
+  // sparse filings were understating F-scores and tripping the "weak fundamentals" flag.
   if (P) {
     const checks = [];
-    const ok = (c, label) => checks.push({ ok: c === true, label });
+    const ok = (have, c, label) => checks.push(have ? { ok: c === true, label } : { ok: false, na: true, label });
     const roaT = sdiv(T.NetIncome, T.TotalAssets), roaP = sdiv(P.NetIncome, P.TotalAssets);
     const ltdT = T.LongTermDebt != null ? T.LongTermDebt : T.TotalDebt;   // fallback for debt-free names
     const ltdP = P.LongTermDebt != null ? P.LongTermDebt : P.TotalDebt;
-    ok(roaT > 0, 'Positive return on assets');
-    ok(T.OperatingCashFlow > 0, 'Positive operating cash flow');
-    ok(roaT > roaP, 'ROA improving year-on-year');
-    ok(T.OperatingCashFlow != null && T.NetIncome != null && T.OperatingCashFlow > T.NetIncome, 'Cash flow exceeds profit (clean earnings)');
-    ok(ltdT != null && ltdP != null && sdiv(ltdT, T.TotalAssets) < sdiv(ltdP, P.TotalAssets), 'Leverage falling');
-    ok(sdiv(T.CurrentAssets, T.CurrentLiabilities) > sdiv(P.CurrentAssets, P.CurrentLiabilities), 'Current ratio improving');
-    ok(T.OrdinarySharesNumber != null && P.OrdinarySharesNumber != null && T.OrdinarySharesNumber <= P.OrdinarySharesNumber * 1.002, 'No share dilution');
-    ok(sdiv(T.GrossProfit, T.TotalRevenue) > sdiv(P.GrossProfit, P.TotalRevenue), 'Gross margin expanding');
-    ok(sdiv(T.TotalRevenue, T.TotalAssets) > sdiv(P.TotalRevenue, P.TotalAssets), 'Asset turnover improving');
+    ok(isFinite(roaT), roaT > 0, 'Positive return on assets');
+    ok(T.OperatingCashFlow != null, T.OperatingCashFlow > 0, 'Positive operating cash flow');
+    ok(isFinite(roaT) && isFinite(roaP), roaT > roaP, 'ROA improving year-on-year');
+    ok(T.OperatingCashFlow != null && T.NetIncome != null, T.OperatingCashFlow > T.NetIncome, 'Cash flow exceeds profit (clean earnings)');
+    ok(ltdT != null && ltdP != null && T.TotalAssets > 0 && P.TotalAssets > 0, sdiv(ltdT, T.TotalAssets) < sdiv(ltdP, P.TotalAssets), 'Leverage falling');
+    ok(isFinite(sdiv(T.CurrentAssets, T.CurrentLiabilities)) && isFinite(sdiv(P.CurrentAssets, P.CurrentLiabilities)),
+       sdiv(T.CurrentAssets, T.CurrentLiabilities) > sdiv(P.CurrentAssets, P.CurrentLiabilities), 'Current ratio improving');
+    ok(T.OrdinarySharesNumber != null && P.OrdinarySharesNumber != null, T.OrdinarySharesNumber <= P.OrdinarySharesNumber * 1.002, 'No share dilution');
+    ok(isFinite(sdiv(T.GrossProfit, T.TotalRevenue)) && isFinite(sdiv(P.GrossProfit, P.TotalRevenue)),
+       sdiv(T.GrossProfit, T.TotalRevenue) > sdiv(P.GrossProfit, P.TotalRevenue), 'Gross margin expanding');
+    ok(isFinite(sdiv(T.TotalRevenue, T.TotalAssets)) && isFinite(sdiv(P.TotalRevenue, P.TotalAssets)),
+       sdiv(T.TotalRevenue, T.TotalAssets) > sdiv(P.TotalRevenue, P.TotalAssets), 'Asset turnover improving');
     const score = checks.filter(c => c.ok).length;
-    out.piotroski = { score, max: 9, checks, verdict: score >= 7 ? 'good' : (score >= 4 ? 'avg' : 'weak') };
+    const evaluable = checks.filter(c => !c.na).length;
+    // verdict from the PASS RATE over evaluable checks (same bands as 7/9 and 4/9);
+    // with too few evaluable checks there's no basis to call it either way → 'avg'
+    const frac = evaluable ? score / evaluable : 0;
+    out.piotroski = { score, max: 9, evaluable, checks,
+      verdict: evaluable < 5 ? 'avg' : frac >= 7 / 9 ? 'good' : (frac >= 4 / 9 ? 'avg' : 'weak') };
   }
 
   // Altman Z″-Score (emerging-market, book-value variant → no FX mismatch)
@@ -1478,9 +1811,13 @@ function computeForensics(byYear, allYears) {
       const X2 = T.RetainedEarnings / T.TotalAssets;
       const X3 = ebit / T.TotalAssets;
       const X4 = T.StockholdersEquity / TL;
-      const z = 3.25 + 6.56 * X1 + 3.26 * X2 + 6.72 * X3 + 1.05 * X4;
+      // NO +3.25 constant (audit 10-Jul-2026): the zones below (>2.6 safe / 1.1–2.6 grey /
+      // <1.1 distress) are calibrated for the raw Z″ = 6.56X1+3.26X2+6.72X3+1.05X4. Adding
+      // Altman's EM bond-rating offset (+3.25) while keeping these zones made the distress
+      // zone unreachable — every stock rated "safe" and the portfolio distress flag never fired.
+      const z = 6.56 * X1 + 3.26 * X2 + 6.72 * X3 + 1.05 * X4;
       out.altman = { z: +z.toFixed(2), zone: z > 2.6 ? 'good' : (z >= 1.1 ? 'avg' : 'weak'),
-        model: 'Z″ emerging-market (book-value) variant' };
+        model: 'Z″ non-manufacturer/EM (book-value) variant' };
     }
   }
 
@@ -1531,6 +1868,7 @@ async function computeRatios(ticker) {
     currency: (ts[0] && ts[0][ts[0].meta.type[0]] && ts[0][ts[0].meta.type[0]][0] && ts[0][ts[0].meta.type[0]][0].reportedValue && ts[0][ts[0].meta.type[0]][0].currencyCode) || null,
     ratios, forensics: computeForensics(byYear, allYears), source: 'live', asOf: new Date().toISOString() };
   _ratioCache.set(ticker, { at: Date.now(), data });
+  capCache(_ratioCache, 300);
   return data;
 }
 
@@ -1542,7 +1880,7 @@ let _nseCk = null, _nseCkAt = 0;
 async function nseCookie(force) {
   if (!force && _nseCk && Date.now() - _nseCkAt < 10 * 60e3) return _nseCk;
   try {
-    const r = await fetch('https://www.nseindia.com/', {
+    const r = await fetchT('https://www.nseindia.com/', {
       headers: { 'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml,*/*', 'Accept-Language': 'en-US,en;q=0.9' } });
     const sc = typeof r.headers.getSetCookie === 'function'
       ? r.headers.getSetCookie()
@@ -1556,7 +1894,7 @@ async function nseApi(pathname, referer) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const ck = await nseCookie(attempt > 0);
     try {
-      const r = await fetch('https://www.nseindia.com' + pathname, {
+      const r = await fetchT('https://www.nseindia.com' + pathname, {
         headers: { 'User-Agent': UA, 'Accept': 'application/json', 'Referer': referer || 'https://www.nseindia.com/',
                    ...(ck ? { 'Cookie': ck } : {}) } });
       if (r.ok) return await r.json();
@@ -1578,6 +1916,14 @@ function nseDateMs(s) {           // '03-Jul-2026' / '03-JUL-2026' → UTC ms
 // whole market, so we cache each day once on disk and every per-stock/scan lookup is free.
 const pad2 = n => String(n).padStart(2, '0');
 function bhavKey(d) { return pad2(d.getDate()) + pad2(d.getMonth() + 1) + d.getFullYear(); }
+// "Today" in MARKET time (IST), independent of the host's timezone (audit 10-Jul-2026: on a
+// UTC host like Render, local "today" lags IST by 5.5h — bhav day lists and results-calendar
+// day math drifted ±1 day between 00:00 UTC and 05:30 IST). Returns a local-constructed Date
+// carrying IST's y/m/d so existing .getDate()/.getMonth() call sites keep working unchanged.
+function istToday() {
+  const t = new Date(Date.now() + 5.5 * 3600e3);
+  return new Date(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
+}
 const _bhav = {};                          // key -> { rows, iso } | { h:1 } (holiday/no file)
 async function loadBhavDay(d) {
   const key = bhavKey(d);
@@ -1586,7 +1932,7 @@ async function loadBhavDay(d) {
   if (disk.rows || disk.h) { _bhav[key] = disk; return disk; }
   let out = null;
   try {
-    const r = await fetch(`https://archives.nseindia.com/products/content/sec_bhavdata_full_${key}.csv`,
+    const r = await fetchT(`https://archives.nseindia.com/products/content/sec_bhavdata_full_${key}.csv`,
       { headers: { 'User-Agent': UA, 'Accept': 'text/csv,*/*', 'Referer': 'https://www.nseindia.com/' } });
     if (r.ok) {
       const rows = {};
@@ -1614,7 +1960,7 @@ async function loadBhavDay(d) {
 async function ensureBhavDays(n) {
   const want = n || 26;
   const cands = [];
-  const d = new Date();
+  const d = istToday();   // NSE trading days are IST-dated — anchor to market time, not host time
   for (let i = 0; i < 55 && cands.length < want + 14; i++) {
     const day = new Date(d.getFullYear(), d.getMonth(), d.getDate() - i);
     if (day.getDay() !== 0 && day.getDay() !== 6) cands.push(day);
@@ -1731,7 +2077,7 @@ function csvSplit(line) {              // quote-aware CSV split (client names co
 let _deals = cacheLoad('deals');
 if (!_deals.rows) _deals = { rows: [], at: 0 };
 async function fetchDealsCsv(type) {
-  const r = await fetch(`https://archives.nseindia.com/content/equities/${type}.csv`,
+  const r = await fetchT(`https://archives.nseindia.com/content/equities/${type}.csv`,
     { headers: { 'User-Agent': UA, 'Accept': 'text/csv,*/*', 'Referer': 'https://www.nseindia.com/' } });
   if (!r.ok) return [];
   return (await r.text()).trim().split(/\r?\n/).slice(1).map(csvSplit)
@@ -1770,7 +2116,7 @@ async function yahooQuoteSummary(ticker, modules) {
   for (const host of ['query1.finance.yahoo.com', 'query2.finance.yahoo.com']) {
     try {
       const url = `https://${host}/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=${modules}&crumb=${encodeURIComponent(auth.crumb)}`;
-      const r = await fetch(url, { headers: { 'User-Agent': UA, 'Cookie': auth.cookie, 'Accept': 'application/json' } });
+      const r = await fetchT(url, { headers: { 'User-Agent': UA, 'Cookie': auth.cookie, 'Accept': 'application/json' } });
       if (!r.ok) continue;
       const j = await r.json();
       const res = j && j.quoteSummary && j.quoteSummary.result && j.quoteSummary.result[0];
@@ -1805,6 +2151,7 @@ async function companyManagement(sym) {
     officers, source: officers.length ? 'Yahoo Finance' : null, asOf: new Date().toISOString(),
   };
   _mgmtMem[ticker] = { at: Date.now(), data };
+  capCache(_mgmtMem, 300);
   cacheSave(key, _mgmtMem[ticker]);
   return data;
 }
@@ -1815,6 +2162,183 @@ function mgmtRank(title) {
   if (/chief|officer|\bvp\b|vice president|head/.test(t)) return 2;
   if (/director/.test(t)) return 3;
   return 4;
+}
+
+// ---------- Company profile ("About this company") — LIVE for EVERY listed symbol ----------
+// Yahoo's assetProfile carries a real plain-English business summary + industry/sector/HQ/
+// employee data for essentially every NSE stock, and summaryDetail/price add market cap,
+// beta and dividend yield. This replaces the old "profile only curated for 5 stocks" gap:
+// any symbol the user searches now gets a real About section. Profiles change rarely →
+// cached 7 days in memory + on disk.
+// Geography terms recognisable in Yahoo business summaries — used to extract a company's
+// stated operating footprint from its own profile text (labeled as such client-side).
+const GEO_TERMS = ['India', 'United States', 'North America', 'South America', 'Latin America', 'Americas',
+  'Europe', 'United Kingdom', 'Germany', 'France', 'Netherlands', 'Switzerland', 'Italy', 'Spain', 'Ireland',
+  'Scandinavia', 'Nordics', 'Middle East', 'United Arab Emirates', 'Saudi Arabia', 'Qatar', 'Oman', 'Kuwait', 'Bahrain',
+  'Africa', 'South Africa', 'Nigeria', 'Kenya', 'Egypt', 'Asia Pacific', 'Southeast Asia', 'Asia',
+  'China', 'Japan', 'Singapore', 'Australia', 'New Zealand', 'South Korea', 'Taiwan', 'Hong Kong', 'Indonesia',
+  'Malaysia', 'Thailand', 'Vietnam', 'Philippines', 'Bangladesh', 'Sri Lanka', 'Nepal', 'Myanmar',
+  'Canada', 'Brazil', 'Mexico', 'Russia', 'Turkey', 'Israel', 'internationally'];
+// Business-segment NAMES extracted from the company's own profile text — Yahoo summaries
+// state them explicitly for most multi-segment companies ("operates through Consumer
+// Electronics, Lighting Products, … segments"). Real data, zero fabrication: the % split
+// itself lives only in the annual report's segment note (linked client-side). Single-segment
+// companies ("operates in one segment") correctly return [].
+function extractSegments(desc) {
+  if (!desc) return [];
+  const m = desc.match(/operates? (?:mainly |primarily )?(?:through|in|under) (?:the )?(?:following )?segments?[,:]? ([^.]+)\./i)
+         || desc.match(/operates? (?:mainly |primarily )?(?:through|in|under) ([^.]+?) segments?\./i);
+  if (!m) return [];
+  let body = m[1];
+  if (/\b(one|single)\s+(?:reportable\s+)?segment/i.test(desc) || /^(?:one|a single)\b/i.test(body.trim())) return [];
+  body = body.replace(/^(?:two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:reportable\s+)?segments?[,:]?\s*/i, '');
+  // split on commas/semicolons ONLY, then strip a leading "and" — splitting on " and " broke
+  // compound segment names ("Oil and Gas" → "Oil" + "Gas", caught live on RELIANCE)
+  return body.split(/,|;/)
+    .map(s => s.trim().replace(/^(?:and|the)\s+/i, ''))
+    .filter(s => s && s.length > 2 && s.length < 60 && !/^segments?$/i.test(s))
+    .slice(0, 10);
+}
+// Hand-curated per-stock revenue splits (product + geography %) from annual reports —
+// segmentCurated.json on disk, read FRESH per request (user edits appear on refresh, and
+// they must never be baked into the 7-day profile cache). Absent file / symbol → null.
+function curatedSegments(sym) {
+  try {
+    const doc = readLocalJson('segmentCurated.json');
+    return (doc && doc.stocks && doc.stocks[sym]) || null;
+  } catch (e) { return null; }
+}
+
+// ---------- OFFICIAL segment revenue — NSE quarterly XBRL filings (Ind AS 108) ----------
+// Every listed company's quarterly results filing carries a machine-readable segment
+// statement: DescriptionOfReportableSegment + SegmentRevenue per segment, plus an explicit
+// "Multi segment"/"Single segment" declaration. This is the AUTHORITATIVE revenue-by-product
+// source (verified live: ITC "FMCG - Cigarettes" ₹8,944.8 Cr matched its Q3-FY25 filing).
+// Context ids prefixed "One…" are the CURRENT quarter. Consolidated filings preferred —
+// exact match on 'Consolidated' ("Non-Consolidated" contains the same substring!).
+// Cached ~45 days (results are quarterly); a fetch failure caches for only 6h so a transient
+// NSE outage doesn't blank a stock for weeks. On Render (NSE blocks cloud IPs) the committed
+// disk cache serves — same pattern as .cache/constituents.json.
+const _segFiled = cacheLoad('segfiled').map || {};   // sym -> { at, data|null }
+const SEGF_TTL = 45 * 86400e3, SEGF_MISS_TTL = 6 * 3600e3;
+let _segFiledSaveT = null;
+function scheduleSegFiledSave() {   // coalesce disk writes (the Nifty-500 warm loop would write 500×)
+  if (_segFiledSaveT) return;
+  _segFiledSaveT = setTimeout(() => { _segFiledSaveT = null; cacheSave('segfiled', { map: _segFiled }); }, 15e3);
+}
+function parseSegmentXbrl(xml, sym, filing) {
+  const consolidated = filing.consolidated === 'Consolidated';
+  const base = { sym, period: filing.toDate || null, consolidated };
+  if (/IsCompanyReportingMultisegmentOrSingleSegment[^>]*>\s*Single/i.test(xml))
+    return { ...base, single: true };
+  const names = {}, revs = {};
+  for (const m of xml.matchAll(/<in-(?:bse-fin|capmkt):DescriptionOfReportableSegment\s+contextRef="One[A-Za-z]*?(\d+)D?"[^>]*>([^<]+)</g))
+    names[m[1]] = rssDecode(m[2]);   // XBRL carries XML entities ("Paper &amp; Packaging") — decode once here
+  for (const m of xml.matchAll(/<in-(?:bse-fin|capmkt):SegmentRevenue\s+contextRef="One[A-Za-z]*?(\d+)D?"[^>]*>([^<]+)</g))
+    revs[m[1]] = +m[2];
+  const rows = Object.keys(names).map(k => ({ label: names[k], rev: revs[k] || 0 })).filter(r => r.rev > 0);
+  const total = rows.reduce((a, r) => a + r.rev, 0);
+  if (rows.length < 2 || !total) return null;   // no usable multi-segment table in this filing
+  const products = rows
+    .map(r => ({ label: r.label, pct: +(r.rev / total * 100).toFixed(1), revCr: Math.round(r.rev / 1e7) }))
+    .filter(r => r.pct > 0)   // drop slivers that round to 0.0% (SUZLON's "Others" at ~0.03%)
+    .sort((a, b) => b.pct - a.pct);
+  return { ...base, single: false, products };
+}
+async function filedSegments(sym) {
+  const hit = _segFiled[sym];
+  if (hit && Date.now() - hit.at < (hit.data ? SEGF_TTL : SEGF_MISS_TTL)) return hit.data;
+  let data = null;
+  try {
+    const rows = await nseApi('/api/corporates-financial-results?index=equities&symbol=' + encodeURIComponent(sym) + '&period=Quarterly',
+      'https://www.nseindia.com/companies-listing/corporate-filings-financial-results');
+    const arr = (Array.isArray(rows) ? rows : []).filter(r => r && r.xbrl)
+      .sort((a, b) => nseDateMs(b.toDate) - nseDateMs(a.toDate));
+    // newest CONSOLIDATED filing shows the whole group's segments (RELIANCE standalone lacks
+    // Jio/Retail); fall back to the newest standalone when a company files standalone-only
+    const newest = arr[0];
+    const pick = arr.find(r => r.consolidated === 'Consolidated' && nseDateMs(r.toDate) >= nseDateMs(newest.toDate) - 100 * 86400e3) || newest;
+    if (pick) {
+      const xr = await fetchT(pick.xbrl, { headers: { 'User-Agent': UA, 'Referer': 'https://www.nseindia.com/' } }, 15000);
+      if (xr.ok) data = parseSegmentXbrl(await xr.text(), sym, pick);
+    }
+  } catch (e) { /* cached as a short-TTL miss below */ }
+  _segFiled[sym] = { at: Date.now(), data };
+  scheduleSegFiledSave();
+  return data;
+}
+// Bulk warm for the Nifty 500 (background, low concurrency — polite to NSE). Skipped when
+// LIGHT_START (NSE unreachable from cloud); there the committed disk snapshot serves.
+async function warmFiledSegments() {
+  const todo = STOCKS.filter(s => {
+    const hit = _segFiled[s.sym];
+    return !(hit && Date.now() - hit.at < (hit.data ? SEGF_TTL : SEGF_MISS_TTL));
+  });
+  if (!todo.length) return;
+  console.log(`Segment filings: warming ${todo.length} stocks in background…`);
+  await pool(todo, 3, s => filedSegments(s.sym).catch(() => null));
+  const got = STOCKS.filter(s => _segFiled[s.sym] && _segFiled[s.sym].data).length;
+  console.log(`Segment filings: ${got}/${STOCKS.length} stocks have official segment data cached.`);
+}
+const _profileMem = {};
+async function companyProfile(sym) {
+  const st = resolveStock(sym);
+  const ticker = st.yh;
+  const key = 'profile2_' + ticker.replace(/[^A-Za-z0-9]/g, '_');   // v2: adds revenueSeries/geoMentions
+  if (_profileMem[ticker] && Date.now() - _profileMem[ticker].at < 7 * 24 * 3600e3) return _profileMem[ticker].data;
+  const disk = cacheLoad(key);
+  if (disk.at && disk.data && Date.now() - disk.at < 7 * 24 * 3600e3) { _profileMem[ticker] = disk; return disk.data; }
+  // profile + reported revenue/profit series in parallel (same filings feed the ratio engine uses)
+  const [res, ts] = await Promise.all([
+    yahooQuoteSummary(ticker, 'assetProfile,summaryDetail,price'),
+    yahooTimeseries(ticker).catch(() => null),
+  ]);
+  const ap = (res && res.assetProfile) || {};
+  const sd = (res && res.summaryDetail) || {};
+  const pr = (res && res.price) || {};
+  const raw = v => (v && v.raw != null) ? v.raw : (typeof v === 'number' ? v : null);
+  // 5-year reported revenue & net-income trend (real "revenue breakdown by year")
+  let revenueSeries = null, fCurrency = null;
+  if (ts) {
+    const byYear = tsByYear(ts);
+    const years = Object.keys(byYear).map(Number).sort((a, b) => a - b).slice(-5);
+    const rows = years.map(y => ({ fy: y,
+      revenue: byYear[y].TotalRevenue != null ? byYear[y].TotalRevenue : null,
+      netIncome: byYear[y].NetIncome != null ? byYear[y].NetIncome : null }))
+      .filter(r => r.revenue != null || r.netIncome != null);
+    if (rows.length) revenueSeries = rows;
+    fCurrency = (ts[0] && ts[0][ts[0].meta.type[0]] && ts[0][ts[0].meta.type[0]][0] && ts[0][ts[0].meta.type[0]][0].currencyCode) || null;
+  }
+  const description = ap.longBusinessSummary || null;
+  // operating footprint EXTRACTED from the company's own profile text — real, but only as
+  // granular as the text; country-wise revenue split isn't published in any free feed.
+  const geoMentions = description
+    ? GEO_TERMS.filter(g => new RegExp('\\b' + g.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(description))
+    : [];
+  const data = {
+    sym: st.sym, ticker,
+    name: pr.longName || pr.shortName || st.name || sym,
+    description,
+    industry: ap.industry || null,
+    sectorYh: ap.sector || null,              // Yahoo's fixed 11-sector taxonomy (drives the PESTLE template)
+    sectorNse: st.sector || null,             // NSE constituents sector (when in the Nifty 500)
+    website: ap.website || null,
+    employees: ap.fullTimeEmployees || null,
+    hq: [ap.city, ap.country].filter(Boolean).join(', ') || null,
+    marketCap: raw(pr.marketCap) != null ? raw(pr.marketCap) : raw(sd.marketCap),
+    beta: raw(sd.beta) != null ? +raw(sd.beta).toFixed(2) : null,
+    divYield: raw(sd.dividendYield) != null ? +(raw(sd.dividendYield) * 100).toFixed(2) : null,
+    week52High: raw(sd.fiftyTwoWeekHigh), week52Low: raw(sd.fiftyTwoWeekLow),
+    revenueSeries, fCurrency, geoMentions,
+    segmentNames: extractSegments(description),   // stated business segments (names only — see extractSegments)
+    source: (description || ap.industry) ? 'Yahoo Finance' : null,
+    asOf: new Date().toISOString(),
+  };
+  if (!data.description && !data.industry && !data.marketCap && !revenueSeries) return data;   // nothing usable → don't cache a miss
+  _profileMem[ticker] = { at: Date.now(), data };
+  capCache(_profileMem, 300);
+  cacheSave(key, _profileMem[ticker]);
+  return data;
 }
 
 // Yahoo's visualization API = real report DATETIMES + EPS est/actual/surprise (what yfinance
@@ -1829,7 +2353,7 @@ async function yahooEarningsDates(ticker) {
     includeFields: ['ticker', 'startdatetime', 'startdatetimetype', 'epsestimate', 'epsactual', 'epssurprisepct'] });
   for (const host of ['query1.finance.yahoo.com', 'query2.finance.yahoo.com']) {
     try {
-      const r = await fetch(`https://${host}/v1/finance/visualization?crumb=${encodeURIComponent(auth.crumb)}`,
+      const r = await fetchT(`https://${host}/v1/finance/visualization?crumb=${encodeURIComponent(auth.crumb)}`,
         { method: 'POST', headers: { 'User-Agent': UA, 'Cookie': auth.cookie, 'Content-Type': 'application/json' }, body });
       if (!r.ok) continue;
       const j = await r.json();
@@ -1912,6 +2436,7 @@ async function earningsReport(sym) {
   }
   const data = { sym, name: st.name, next, rows: rows.slice(0, 12), stats, asOf: new Date().toISOString() };
   _earnCache.set(sym, { at: Date.now(), data });
+  capCache(_earnCache, 150);
   return data;
 }
 // market-wide upcoming results calendar — NSE's official board-meeting feed (free, authoritative)
@@ -1930,9 +2455,12 @@ async function earningsCalendar() {
   }
   const tierOf = {};
   STOCKS.forEach(s => tierOf[s.sym] = s.tier);
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const rows = _ecal.rows.filter(r => r.ms >= today.getTime() - 86400e3)
-    .map(r => ({ ...r, tier: tierOf[r.sym] || null, daysTo: Math.round((r.ms - today.getTime()) / 86400e3) }));
+  // IST-anchored midnight as UTC ms — r.ms is Date.UTC of the NSE date (nseDateMs), so both
+  // sides of the daysTo subtraction live on the same UTC-midnight grid regardless of host TZ
+  const ist = new Date(Date.now() + 5.5 * 3600e3);
+  const todayMs = Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate());
+  const rows = _ecal.rows.filter(r => r.ms >= todayMs - 86400e3)
+    .map(r => ({ ...r, tier: tierOf[r.sym] || null, daysTo: Math.round((r.ms - todayMs) / 86400e3) }));
   return { rows, count: rows.length, asOf: new Date(_ecal.at || Date.now()).toISOString() };
 }
 
@@ -1943,8 +2471,13 @@ async function peerCompare(sym) {
   if (hit && Date.now() - hit.at < 30 * 60e3) return hit.data;
   const st = resolveStock(sym);
   if (!st.sector) return { sym, sector: null, peers: [], note: 'Sector unknown for this symbol — peer set unavailable (not in the Nifty 500 constituents).' };
-  const bankish = BANKISH_RE.test(st.sector);
-  const peerStocks = STOCKS.filter(s => s.sector === st.sector && s.sym !== st.sym)
+  const bankish = isLenderOrInsurer(st.sym, st.sector);
+  // NSE lumps banks, NBFCs, insurers AND capital-market names (exchanges, AMCs, brokers) under the
+  // single "Financial Services" sector. Split by lender-status so a bank's peers are other lenders
+  // and an exchange's peers are other capital-market names — not a mix. No-op for other sectors
+  // (isLenderOrInsurer is false for all of them, so every same-sector name still matches).
+  const peerStocks = STOCKS.filter(s => s.sector === st.sector && s.sym !== st.sym
+      && isLenderOrInsurer(s.sym, s.sector) === bankish)
     .sort((a, b) => a.tier - b.tier).slice(0, 7);
   const all = [st, ...peerStocks];
   const tvp = await tvScan(all.map(s => s.sym));
@@ -1965,11 +2498,14 @@ async function peerCompare(sym) {
       fromHigh: (t.price_52_week_high && t.close) ? +((t.close - t.price_52_week_high) / t.price_52_week_high * 100).toFixed(1) : null,
       vol: t['Volatility.D'] != null ? +(t['Volatility.D'] * Math.sqrt(252)).toFixed(1) : null,
       beta: t.beta_1_year != null ? +t.beta_1_year.toFixed(2) : null,
-      pe: get('P/E (TTM)'), roe: get('Return on Equity (ROE)'), margin: get('Net Profit Margin'), de: get('Debt-to-Equity'),
+      // P/E from the TV scan (reliable for every name; Yahoo's keyStats omits it for some, e.g. TCS/INFY)
+      pe: t.price_earnings_ttm != null ? +(+t.price_earnings_ttm).toFixed(1) : get('P/E (TTM)'),
+      roe: get('Return on Equity (ROE)'), margin: get('Net Profit Margin'), de: get('Debt-to-Equity'),
       f: rd && rd.forensics && rd.forensics.piotroski ? rd.forensics.piotroski.score : null };
   }).filter(Boolean);
   const data = { sym: st.sym, sector: st.sector, bankish, peers: rows, count: rows.length, asOf: new Date().toISOString() };
   _peersCache.set(sym, { at: Date.now(), data });
+  capCache(_peersCache, 150);
   return data;
 }
 
@@ -2020,8 +2556,12 @@ async function buildThesis(sym) {
     else if (s.fromHigh <= -30) bear.push(`Trades ${Math.abs(s.fromHigh)}% below its 52-week high — deep drawdown territory`);
   }
   // fundamental quality (forensics)
-  if (fund && fund.fscore != null) (fund.fscore >= 7 ? bull : fund.fscore <= 3 ? bear : watch)
-    .push(`Piotroski F-Score ${fund.fscore}/9 — ${fund.fscore >= 7 ? 'broad, filing-verified fundamental improvement' : fund.fscore <= 3 ? 'deteriorating fundamentals across the filing checks' : 'mixed fundamental momentum'}`);
+  if (fund && fund.fscore != null) {
+    const fEval = fund.feval || 9, fFrac = fund.fscore / fEval;
+    const fGood = fEval >= 5 && fFrac >= 7 / 9, fBad = fEval >= 5 && fFrac <= 3 / 9;
+    (fGood ? bull : fBad ? bear : watch)
+      .push(`Piotroski F-Score ${fund.fscore}/${fEval}${fEval < 9 ? ` (${9 - fEval} checks lacked filing data)` : ''} — ${fGood ? 'broad, filing-verified fundamental improvement' : fBad ? 'deteriorating fundamentals across the filing checks' : 'mixed fundamental momentum'}`);
+  }
   if (fund && fund.zZone === 'weak') bear.push(`Altman Z″ ${fund.z} sits in the balance-sheet distress zone`);
   else if (fund && fund.zZone === 'good' && fund.z != null) bull.push(`Altman Z″ ${fund.z} — comfortably in the safe zone, low solvency risk`);
   if (fund && fund.accrualsFlag === 'weak') bear.push(`Earnings quality flag — reported profit is running ahead of operating cash (high accruals)`);
@@ -2052,6 +2592,7 @@ async function buildThesis(sym) {
   const data = { sym: st.sym, name: st.name, stance, composite: c, sub: s.sub, confidence, coverage: `${coverage}/7 engines`,
     oneLiner, bull, bear, watch, engines, asOf: new Date().toISOString() };
   _thesisCache.set(sym, { at: Date.now(), data });
+  capCache(_thesisCache, 150);
   return data;
 }
 
@@ -2302,8 +2843,21 @@ async function positionSizingPortfolio(symsIn, opts = {}) {
 // One endpoint feeds the whole home dashboard, composed almost entirely from caches that the
 // other engines already warm — so the home page stays instant.
 let _pulse = null;
+// Breadth is overlaid AT SERVE TIME on the cached pulse (audit 10-Jul-2026): computeBreadth
+// is the SAME freshest-first source the /api/breadth gauge uses (pure in-memory reads — free),
+// so the Pulse brief and the gauge on one screen can never disagree, and a pulse built while
+// the breadth scan was still warming doesn't lock breadth:null into the 3-min pulse cache.
+function pulseWithBreadth(base) {
+  const br = computeBreadth('Nifty 500', false);
+  const breadth = (br && br.breadth) ? br.breadth : null;
+  const brief = (base.brief || []).slice();
+  if (breadth) brief.splice(Math.min(1, brief.length), 0, {
+    tone: breadth.regime === 'Bullish' ? 'good' : breadth.regime === 'Neutral' ? 'warn' : 'bad',
+    text: `Breadth ${breadth.regime.toLowerCase()} — ${breadth.pct200}% of the Nifty 500 above the 200-DMA, advances/declines ${breadth.adv}/${breadth.dec}` });
+  return { ...base, breadth, brief };
+}
 async function pulseData() {
-  if (_pulse && Date.now() - _pulse.at < 3 * 60e3) return _pulse.data;
+  if (_pulse && Date.now() - _pulse.at < 3 * 60e3) return pulseWithBreadth(_pulse.data);
   const val = r => (r && r.status === 'fulfilled') ? r.value : null;
   const [niftyR, fiiR, moversR, spikesR, ecalR] = await Promise.allSettled([
     quote('^NSEI'),
@@ -2313,19 +2867,6 @@ async function pulseData() {
     earningsCalendar(),
   ]);
   const nifty = val(niftyR), fii = val(fiiR), movers = val(moversR), spikes = val(spikesR), ecal = val(ecalR);
-  // breadth from the already-warmed Nifty 500 heatmap cache (zero extra fetches)
-  let breadth = null;
-  const te = _trend['Nifty 500|1 Day|sma|20,200'];
-  if (te && te.data && te.data.stocks && te.data.stocks.length) {
-    const st = te.data.stocks;
-    const above = len => st.filter(s => { const m = (s.mas || []).find(x => x.len === len); return m && m.above; }).length;
-    const adv = st.filter(s => s.ret > 0).length;
-    const p200 = Math.round(above(200) / st.length * 100), p20 = Math.round(above(20) / st.length * 100);
-    breadth = { n: st.length, pct200: p200, pct20: p20, adv, dec: st.length - adv,
-      regime: p200 >= 60 ? 'Bullish' : p200 >= 40 ? 'Neutral' : 'Bearish', asOf: te.data.asOf };
-  } else {
-    topTrend('1 Day', 'Nifty 500', parseMaConfig(null, null)).catch(() => {});   // warm for next hit
-  }
   const gainer = movers && movers.gainers && movers.gainers[0] || null;
   const loser = movers && movers.losers && movers.losers[0] || null;
   let spike = null;
@@ -2342,8 +2883,7 @@ async function pulseData() {
     brief.push({ tone: up ? 'good' : 'bad',
       text: `NIFTY 50 at ${nifty.price.toLocaleString('en-IN')} (${up ? '+' : ''}${nifty.pct}%)${vs200 ? `, trading ${vs200} its 200-DMA` : ''}` });
   }
-  if (breadth) brief.push({ tone: breadth.regime === 'Bullish' ? 'good' : breadth.regime === 'Neutral' ? 'warn' : 'bad',
-    text: `Breadth ${breadth.regime.toLowerCase()} — ${breadth.pct200}% of the Nifty 500 above the 200-DMA, advances/declines ${breadth.adv}/${breadth.dec}` });
+  // (breadth brief line is injected by pulseWithBreadth at serve time — see above)
   if (fii && fii.latest && fii.latest.fii && fii.latest.dii) {
     const f = fii.latest.fii.n, d = fii.latest.dii.n;
     const cr = v => `${v < 0 ? '−' : '+'}₹${Math.abs(Math.round(v)).toLocaleString('en-IN')} Cr`;
@@ -2358,9 +2898,9 @@ async function pulseData() {
     text: `Results ahead: ${results.map(r => `${r.sym} ${r.date.slice(0, 6)}`).join(', ')}` });
   const data = { asOf: new Date().toISOString(),
     nifty: nifty ? { value: nifty.price, pct: nifty.pct, above200: nifty.sma200 != null ? nifty.price >= nifty.sma200 : null } : null,
-    breadth, fii: fii && fii.latest || null, gainer, loser, spike, results, brief };
+    fii: fii && fii.latest || null, gainer, loser, spike, results, brief };
   _pulse = { at: Date.now(), data };
-  return data;
+  return pulseWithBreadth(data);
 }
 // watchlist quotes: one batched TV scan (matches the user's charts) + in-memory delivery flags
 async function watchQuotes(syms) {
@@ -2405,7 +2945,13 @@ async function sparksData() {
     const step = Math.max(1, Math.ceil(closes.length / 60));
     const pts = closes.filter((_, i) => i % step === 0).map(v => +v.toFixed(2));
     if (closes.length && pts[pts.length - 1] !== +closes[closes.length - 1].toFixed(2)) pts.push(+closes[closes.length - 1].toFixed(2));
-    return { name, pts };
+    // yesterday's close — the SAME reference the index card's headline % uses. Lets the client
+    // colour the sparkline vs the prior close (not vs its own first intraday point), so a
+    // gap-up-then-drift day can't show a green headline over a red line (audit 10-Jul-2026).
+    const m = res.meta || {};
+    const prevClose = m.chartPreviousClose != null ? m.chartPreviousClose
+      : (m.previousClose != null ? m.previousClose : null);
+    return { name, pts, prevClose: prevClose != null ? +prevClose.toFixed(2) : null };
   });
   const data = { sparks: out, asOf: new Date().toISOString() };
   _sparks = { at: Date.now(), data };
@@ -2624,10 +3170,31 @@ function send(res, code, body, type) {
   res.end(body);
 }
 
+// Per-IP rate limit for the EXPENSIVE endpoints only (audit 10-Jul-2026): /api/portfolio fans
+// out ~4 upstream calls per holding and /api/index can scan hundreds of charts — with the app
+// now publicly deployed, one crawler could exhaust the free host and burn upstream goodwill.
+// Fixed 60s window, generous enough that a human user never hits it. Localhost is exempt.
+const RL_LIMIT = 30;                                  // heavy requests / minute / IP
+const HEAVY_PATHS = new Set(['/api/portfolio', '/api/index', '/api/pfbacktest', '/api/possize',
+  '/api/thesis', '/api/trend', '/api/peers', '/api/ratios', '/api/earnings']);
+const _rl = new Map();                                // ip -> { n, resetAt }
+function rateLimited(req) {
+  const fwd = (req.headers['x-forwarded-for'] || '').split(',')[0].trim();   // Render sits behind a proxy
+  const ip = fwd || (req.socket && req.socket.remoteAddress) || 'unknown';
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return false;
+  const now = Date.now();
+  let e = _rl.get(ip);
+  if (!e || now > e.resetAt) { e = { n: 0, resetAt: now + 60e3 }; _rl.set(ip, e); }
+  if (_rl.size > 5000) _rl.clear();                   // bound the tracker itself
+  return ++e.n > RL_LIMIT;
+}
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://localhost:${PORT}`);
 
   try {
+    if (HEAVY_PATHS.has(u.pathname) && rateLimited(req))
+      return send(res, 429, JSON.stringify({ error: 'Too many requests — please slow down (30 heavy calls/min).' }));
     if (u.pathname === '/api/trend') {
       const tf = u.searchParams.get('tf') || '1 Day';
       const uni = u.searchParams.get('uni') || 'Nifty 50';
@@ -2669,8 +3236,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (u.pathname === '/api/symbols') {
-      const all = STOCKS.map(s => ({ sym: s.sym, name: s.name, sector: s.sector }));
-      return send(res, 200, JSON.stringify({ symbols: all }));
+      // Nifty 500 first (has sector), then the rest of the listed NSE universe (sector unknown) —
+      // so every search box can find any listed stock, not just the 500 we actively scan.
+      const all = STOCKS.map(s => ({ sym: s.sym, name: s.name, sector: s.sector }))
+        .concat(EQUITY_EXTRA.map(s => ({ sym: s.sym, name: s.name, sector: '' })));
+      return send(res, 200, JSON.stringify({ symbols: all, count: all.length, tracked: STOCKS.length }));
     }
 
     if (u.pathname === '/api/indices') {
@@ -2718,13 +3288,28 @@ const server = http.createServer(async (req, res) => {
       const ticker = TICKER_OVERRIDE[sym] || (sym.includes('.') || sym.startsWith('^') ? sym : sym + '.NS');
       // banks/NBFCs/insurers: generic statement ratios (op-margin, D/E, interest cover) are
       // meaningless, and their real ratios (NIM, NPA, CASA, CRAR) aren't in Yahoo fundamentals.
+      // Capital-market financials (exchanges, brokers, AMCs — see NON_LENDER_FIN) are exempt.
       const st = STOCKS.find(s => s.sym === sym);
-      if (st && /bank|nbfc|financ|insurance/i.test(st.sector)) {
+      if (st && isLenderOrInsurer(st.sym, st.sector)) {
         return send(res, 200, JSON.stringify({ symbol: ticker, banking: true, source: 'unavailable', ratios: [],
           note: 'Bank/financial regulatory ratios (NIM, NPA, CASA, CRAR) are not available from the free data source, and generic statement ratios are not meaningful for lenders.' }));
       }
       const data = await computeRatios(ticker);
       if (!data) return send(res, 404, JSON.stringify({ error: 'no fundamentals available' }));
+      // P/E: use the TradingView scanner as the single source of truth so the Financials tab and
+      // the Peers tab (which reads TV) never disagree, and so it's populated for every name —
+      // Yahoo's keyStats is intermittent (drops TCS/INFY under load) and uses a different TTM EPS.
+      try {
+        const bare = sym.replace(/\.NS$/, '');
+        const tvp = (await tvScan([bare]))[bare];
+        if (tvp && tvp.price_earnings_ttm > 0) {
+          const peVal = round2(+tvp.price_earnings_ttm, 1);
+          const peEntry = data.ratios.find(r => r.name === 'P/E (TTM)');
+          if (peEntry) { peEntry.current = peVal; peEntry.trend = [peVal]; peEntry.source = 'tradingview'; }
+          else data.ratios.push({ name: 'P/E (TTM)', cat: 'Valuation', unit: 'x', ideal: 'context only', higher: false,
+            years: [], trend: [peVal], current: peVal, verdict: 'avg', single: true, source: 'tradingview' });
+        }
+      } catch (e) { /* keep Yahoo's P/E (if any) when TV is unreachable */ }
       return send(res, 200, JSON.stringify(data));
     }
 
@@ -2764,33 +3349,8 @@ const server = http.createServer(async (req, res) => {
 
     if (u.pathname === '/api/index') {
       const name = u.searchParams.get('name') || 'Nifty 50';
-      const def = INDEX_DEFS[name];
-      if (!def) return send(res, 404, JSON.stringify({ error: 'unknown index' }));
-      const idxRes = await yahooChart(def.yh, '1d', '5d');
-      let index = null;
-      if (idxRes) {
-        const m = idxRes.meta || {};
-        const c = ((idxRes.indicators.quote[0] || {}).close || []).filter(v => v != null && !isNaN(v));
-        const price = m.regularMarketPrice != null ? m.regularMarketPrice : c[c.length - 1];
-        const prev = c[c.length - 2];
-        index = {
-          value: price, change: prev ? +(price - prev).toFixed(2) : 0, pct: prev ? +(((price - prev) / prev) * 100).toFixed(2) : 0,
-          dayHigh: m.regularMarketDayHigh, dayLow: m.regularMarketDayLow, week52High: m.fiftyTwoWeekHigh, week52Low: m.fiftyTwoWeekLow,
-          volume: m.regularMarketVolume,
-        };
-      }
-      let memberList = def.weighted || universe(name).map(s => [s.sym, null]);
-      // the weighted lists only carry the TOP names by weight (approx weights) — for indices
-      // whose official constituents we track, append the remaining members with weight=null
-      // so the drill-down shows ALL 50/14/10 names, not just the top-30.
-      if (def.weighted && ['Nifty 50', 'Bank Nifty', 'Nifty IT'].includes(name)) {
-        const have = new Set(memberList.map(([s]) => s));
-        for (const s of universe(name)) if (!have.has(s.sym)) memberList = memberList.concat([[s.sym, null]]);
-      }
-      const members = (await pool(memberList, 10, ([sym, w]) => memberSnap(sym, w))).filter(m => !m.error);
-      if (def.weighted) members.sort((a, b) => (Math.abs(b.contribution) || 0) - (Math.abs(a.contribution) || 0) || b.pct - a.pct);
-      else members.sort((a, b) => b.pct - a.pct);
-      return send(res, 200, JSON.stringify({ name, yahoo: def.yh, weighted: !!def.weighted, index, members, asOf: new Date().toISOString() }));
+      if (!INDEX_DEFS[name]) return send(res, 404, JSON.stringify({ error: 'unknown index' }));
+      return send(res, 200, JSON.stringify(await indexPage(name)));
     }
 
     if (u.pathname === '/api/sentiment') {
@@ -2808,6 +3368,24 @@ const server = http.createServer(async (req, res) => {
       if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
       try { return send(res, 200, JSON.stringify(await companyManagement(sym))); }
       catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e), officers: [] })); }
+    }
+
+    if (u.pathname === '/api/profile') {
+      // live "About this company" for ANY listed symbol (description, industry, HQ, mcap…).
+      // Curated segment splits are overlaid HERE (read fresh from segmentCurated.json per
+      // request) so hand-added splits show up immediately, never trapped in the 7-day cache.
+      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim().replace(/\.NS$/, '');
+      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      try {
+        // filed segments usually answer from the 45-day cache instantly; a cold NSE fetch is
+        // capped at 9s so the About panel never hangs on it (it finishes in bg for next view)
+        const [data, filed] = await Promise.all([
+          companyProfile(sym),
+          withTimeout(filedSegments(sym), 9000).catch(() => null),
+        ]);
+        return send(res, 200, JSON.stringify({ ...data, filed, curated: curatedSegments(sym) }));
+      }
+      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
     }
 
     if (u.pathname === '/api/swot') {
@@ -2838,6 +3416,15 @@ const server = http.createServer(async (req, res) => {
 
     if (u.pathname === '/api/pulse') {
       try { return send(res, 200, JSON.stringify(await pulseData())); }
+      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+    }
+
+    if (u.pathname === '/api/breadth') {
+      // Fast, non-blocking breadth for one universe. Nifty 50 is warmed at startup (even in
+      // LIGHT_START) so it returns instantly; Nifty 500 warms in the background and fills in.
+      const uni = u.searchParams.get('uni') || 'Nifty 500';
+      const force = u.searchParams.get('force') === '1';
+      try { return send(res, 200, JSON.stringify(computeBreadth(uni, force))); }
       catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
     }
 
@@ -2986,6 +3573,10 @@ const server = http.createServer(async (req, res) => {
     if (disk.bank && disk.bank.length) BANK_SET = new Set(disk.bank);
     if (disk.it && disk.it.length)     IT_SET   = new Set(disk.it);
   }
+  // 1b) hydrate the broad NSE equity master (search universe) from its committed disk cache too.
+  const diskEq = cacheLoad('equitymaster');
+  if (diskEq.stocks && diskEq.stocks.length) EQUITY_MASTER = diskEq.stocks;
+  rebuildEquityExtra();
   // 2) refresh the official NSE constituents now, then daily — but only on a full host.
   //    On cloud (NSE blocks the IP) this fetch just hangs; the committed .cache/constituents.json
   //    hydrated in step 1 already carries the full Nifty-500 universe, so we skip it.
@@ -2993,6 +3584,8 @@ const server = http.createServer(async (req, res) => {
   if (!_light) {
     await loadConstituents().catch(() => {});
     setInterval(() => loadConstituents().catch(() => {}), 24 * 3600e3);
+    loadEquityMaster().catch(() => {});                                    // refresh the broad search list
+    setInterval(() => loadEquityMaster().catch(() => {}), 24 * 3600e3);
   }
   // 3) warm the common scans in the background (only actually scans if the disk cache is cold/stale).
   //    LIGHT_START skips the heavy warm burst on constrained/free hosts: Render's 512MB/0.1-CPU
@@ -3005,9 +3598,15 @@ const server = http.createServer(async (req, res) => {
   if (LIGHT_START) {
     console.log('LIGHT_START: constrained host detected — skipping heavy warm-up, features load on demand.');
     topTrend('1 Day', 'Nifty 50', defCfg).catch(() => {});   // one small scan so the Trend tab isn't stone-cold
+    // Warm the home-page breadth gauge: batched spark scans are tiny (Nifty 50 = 3 calls,
+    // Nifty 500 = 25 calls), so even the constrained host can afford both at boot. The 500
+    // waits 3s so it never contends with the boot burst that caused the restart loop.
+    refreshBreadth('Nifty 50').catch(() => {});
+    setTimeout(() => refreshBreadth('Nifty 500').catch(() => {}), 3000);
   } else {
     topTrend('1 Day', 'Nifty 50', defCfg).catch(() => {});
     topTrend('1 Day', 'Nifty 500', defCfg).catch(() => {});
+    refreshBreadth('Nifty 500').catch(() => {});   // home-page breadth gauge, warm immediately
     topMovers('Nifty 50', 'daily').catch(() => {});
     topExtremes('Nifty 50').catch(() => {});
     topExtremes('Nifty 500').catch(() => {});
@@ -3023,6 +3622,10 @@ const server = http.createServer(async (req, res) => {
     //    a no-op after the first ever run
     macroGeo().catch(() => {});
     macroIndicator('inflation').catch(() => {});
+    // 6) official segment filings for the whole Nifty 500 (quarterly XBRL, disk-cached ~45d;
+    //    a no-op once warm). Delayed past the boot burst; skipped on LIGHT_START hosts where
+    //    NSE is unreachable — they serve the committed .cache/segfiled.json snapshot instead.
+    setTimeout(() => warmFiledSegments().catch(() => {}), 30000);
   }
 })();
 
