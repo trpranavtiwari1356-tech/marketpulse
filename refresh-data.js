@@ -18,7 +18,10 @@ const path = require('path');
 
 const DIR = path.join(__dirname, '.cache');
 const PORT = 5199;                     // spare port, so a server you already have open is untouched
-const BHAV_KEEP = 30;                  // trading days to retain; the delivery engine reads 26
+// Trading days to retain. The delivery engine reads 26, but ensureBhavDays() probes a wider
+// lookback, so keeping only 26-30 means a normal server run keeps re-creating files this script
+// just deleted. 40 covers the probe window and stops that churn.
+const BHAV_KEEP = 40;
 const BOOT_TIMEOUT_MS = 90000;
 
 const args = process.argv.slice(2);
