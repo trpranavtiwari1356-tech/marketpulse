@@ -1253,6 +1253,7 @@
   .macro-summary:empty { display: none; }
   .macro-summary b { color: var(--gold); }
   .macro-summary .mm-rank-hl { color: var(--text); font-weight: 700; }
+  .macro-summary .mm-est-note { color: var(--gold); font-weight: 600; }
   .macro-rank { overflow-y: auto; min-height: 200px; }
   .mm-row { display: flex; align-items: center; gap: 10px; padding: 9px 8px; border-bottom: 1px solid var(--border);
     cursor: pointer; border-radius: 6px; transition: background .12s; }
@@ -1270,6 +1271,10 @@
   .mm-val { text-align: right; font-variant-numeric: tabular-nums; }
   .mm-val .v { font-size: .9rem; font-weight: 700; }
   .mm-val .mm-obs { display: block; font-size: .66rem; color: var(--muted); margin-top: 1px; }
+  /* An IMF projection must never read like a measured observation. The year chip takes the same
+     gold caution colour the risk ticker uses for a stale reading — declared after both .mm-val
+     and .macro-tip rules so it wins the specificity tie in the rank list and the map tooltip. */
+  .mm-obs.est { color: var(--gold); font-weight: 600; cursor: help; }
   .macro-msg { padding: 24px 10px; text-align: center; color: var(--muted); font-size: .82rem; line-height: 1.6; }
   .macro-msg button { margin-top: 10px; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
     background: var(--surface2); color: var(--text); cursor: pointer; }
@@ -1471,6 +1476,8 @@
   .macro-refresh-btn.spin .mm-ref-ico { animation: mm-spin .8s linear infinite; }
   @keyframes mm-spin { to { transform: rotate(360deg); } }
   .macro-updated { font-size: .68rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  /* set by mmFreshness when the snapshot is past its TTL or the refresh circuit is open */
+  .macro-updated.stale { color: var(--gold); font-weight: 600; }
 
   /* macro: category row + curated-tab marker */
   .macro-cats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -6933,11 +6940,17 @@ async function mmFetch(ind, force) {
   // curated tabs always re-read their JSON file server-side, so they just need the cache bust.
   let url = curated ? '/api/macro-curated?ind=' + ind : '/api/macro?ind=' + ind;
   if (force && !curated) url += '&fresh=1';
-  const r = await fetch(url);
-  const j = await r.json();
-  if (j.error) throw new Error(j.error);
-  _mmCache[ind] = j;
-  return j;
+  // A 503/CACHE_WARMING means the server is building this indicator's first snapshot right now
+  // (only possible on a deploy with no committed cache). That is a wait, not a failure — retry
+  // quietly a couple of times before showing the user anything.
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(url);
+    const j = await r.json();
+    if (!j.error) { _mmCache[ind] = j; return j; }
+    const code = j.errorDetail && j.errorDetail.code;
+    if (code === 'CACHE_WARMING' && attempt < 2) { await new Promise(s => setTimeout(s, 4000)); continue; }
+    throw new Error(j.error);
+  }
 }
 
 // ↻ Refresh — force a live re-pull of the current indicator, and re-read the geopolitical file
@@ -6955,8 +6968,9 @@ async function mmRefresh() {
       if (g && !g.error) { MM.geoRisk = g; mmRenderOverlay(); mmRenderRiskTicker(); }
     }).catch(() => {});
     delete _mmCache[MM.ind];
+    // The server refreshes behind the request, so what comes back may still be the previous
+    // snapshot with `refreshing: true` — mmFreshness says so rather than claiming "updated now".
     mmApplyData(await mmFetch(MM.ind, true));
-    stamp.textContent = 'updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch (e) {
     stamp.textContent = 'refresh failed';
     document.getElementById('macro-rank').innerHTML =
@@ -7058,26 +7072,58 @@ function mmApplyData(data) {
   // curated tabs are single-year snapshots → no meaningful slider, so disable it
   const singleYear = data.years.length <= 1;
   slider.disabled = singleYear;
+  // Badge states are deliberately distinct: curated (hand-maintained), measured-only (the tabs
+  // with no IMF equivalent, which honestly stop at their last World Bank year), and blended
+  // (actuals + clearly-marked estimates). Never just "LIVE" — none of this is intraday data.
+  const estFrom = data.estimateFrom;
   document.getElementById('macro-badge').textContent = data.curated
     ? `CURATED · ${data.source}`
-    : `WORLD BANK · ANNUAL · ${data.years[0]}–${data.latestYear}`;
+    : estFrom
+      ? `WORLD BANK + IMF · ${data.years[0]}–${data.latestYear} · ${estFrom}+ EST`
+      : `WORLD BANK · ANNUAL · ${data.years[0]}–${data.latestYear}`;
   const curAge = data.curated ? mmCuratedAge(data.updated) : null;
   const src = data.curated
     ? `<b>Source:</b> ${data.source} — hand-verified snapshot (single year, so the slider is fixed).${curAge ? ` Last reviewed <b>${curAge.label}</b>${curAge.monthsOld >= 1 ? ` (${curAge.monthsOld} month${curAge.monthsOld > 1 ? 's' : ''} ago)` : ''}.` : ''} Figures are rounded; edit <code>macroCurated.json</code> to update.`
-    : `<b>Source:</b> World Bank WDI (via DBnomics) — annual, published with a lag, so each country shows its own observation year (grey = nothing in the last 5 years).`;
+    : estFrom
+      ? `<b>Source:</b> ${data.source} — annual. Measured World Bank observations run to <b>${data.actualsThrough}</b>; <b>${estFrom}–${data.latestYear}</b> are IMF World Economic Outlook${data.weoVintage ? ' (' + data.weoVintage.replace(/^WEO:/, '') + ')' : ''} estimates, marked <span class="mm-obs est">est</span> on every row and tooltip. Grey = no observation in the last 5 years.`
+      : `<b>Source:</b> ${data.source} — annual, published with a lag, so each country shows its own observation year (grey = nothing in the last 5 years). No IMF projection exists for this series, so it ends at the last measured year rather than being extended.`;
   const impact = data.note ? ` <b>India lens:</b> ${data.note}` : '';
   document.getElementById('macro-note').innerHTML = `<b>${data.label}:</b> ${data.desc} ${src}${impact}`;
+  mmFreshness(data);
   mmRender();
+}
+
+// Freshness line next to the ↻ button. Reports what the CACHE is doing, separately from what the
+// DATA covers — a snapshot refreshed an hour ago can still legitimately hold 2026 estimates, and
+// conflating the two is what made panels look "live" when they were not.
+function mmFreshness(data) {
+  const el = document.getElementById('macro-updated');
+  if (!el) return;
+  const m = data.meta;
+  if (!m) { el.textContent = data.curated && data.updated ? 'curated · ' + data.updated : ''; el.title = ''; return; }
+  const mins = Math.round((m.cacheAgeMs || 0) / 60000);
+  const age = mins < 1 ? 'just now' : mins < 60 ? mins + ' min ago' : Math.round(mins / 60) < 24 ? Math.round(mins / 60) + ' h ago'
+            : Math.round(mins / 1440) + ' d ago';
+  const state = m.refreshStatus === 'unavailable' ? 'refresh unavailable'
+              : m.refreshStatus === 'delayed' ? 'refresh delayed'
+              : m.refreshing ? 'refreshing…' : null;
+  el.textContent = `cached · refreshed ${age}${state ? ' · ' + state : ''}`;
+  el.title = `Source: ${m.source}\nSnapshot built: ${new Date(m.sourceAsOf).toLocaleString()}\nServed: ${new Date(m.servedAt).toLocaleString()}`
+           + (m.lastError ? `\nLast refresh error: ${m.lastError}` : '');
+  el.classList.toggle('stale', m.cacheState === 'stale' || m.refreshStatus === 'unavailable');
 }
 
 function mmYearChange(y) { if (!MM.data) return; MM.year = y; mmRender(); }
 
-// value at the slider year, else the newest observation up to 5 years older (shown honestly)
+// value at the slider year, else the newest observation up to 5 years older (shown honestly).
+// `est` marks a value that comes from the IMF's projection range rather than a measurement —
+// each country carries its own boundary because World Bank actuals run out at different years.
 function mmVal(iso) {
   const c = MM.data && MM.data.countries[iso];
   if (!c) return null;
-  if (c.values[MM.year] != null) return { v: c.values[MM.year], obs: MM.year };
-  for (let y = MM.year - 1; y >= MM.year - 5; y--) if (c.values[y] != null) return { v: c.values[y], obs: y };
+  const isEst = y => c.estimateFrom != null && y >= c.estimateFrom;
+  if (c.values[MM.year] != null) return { v: c.values[MM.year], obs: MM.year, est: isEst(MM.year) };
+  for (let y = MM.year - 1; y >= MM.year - 5; y--) if (c.values[y] != null) return { v: c.values[y], obs: y, est: isEst(y) };
   return null;
 }
 
@@ -7106,13 +7152,17 @@ function mmRender() {
 function mmSummary() {
   const el = document.getElementById('macro-summary'); if (!el) return;
   const arr = [];
-  for (const iso in MM.data.countries) { const r = mmVal(iso); if (r) arr.push({ iso, v: r.v }); }
+  for (const iso in MM.data.countries) { const r = mmVal(iso); if (r) arr.push({ iso, v: r.v, est: r.est }); }
   if (!arr.length) { el.innerHTML = ''; return; }
   arr.sort((a, b) => b.v - a.v);
   const med = arr[Math.floor(arr.length / 2)].v, u = MM.data.unit;
   let s = `<b>${MM.data.label}</b> · ${arr.length} countries · world median <span class="mm-rank-hl">${mmFmt(med)}${u}</span>`;
   const rank = arr.findIndex(x => x.iso === 'IND');
   if (rank >= 0) s += `<br>🇮🇳 India: <span class="mm-rank-hl">${mmFmt(arr[rank].v)}${u}</span> · rank <span class="mm-rank-hl">${rank + 1}</span> of ${arr.length} (highest → lowest)`;
+  // If most of what is on screen at this year is projected, say so once at the top rather than
+  // relying on the reader to notice the per-row markers.
+  const estN = arr.filter(x => x.est).length;
+  if (estN) s += `<br><span class="mm-est-note">${estN === arr.length ? 'All' : estN + ' of ' + arr.length} values at ${MM.year} are IMF estimates, not measured observations.</span>`;
   el.innerHTML = s;
 }
 
@@ -7136,8 +7186,11 @@ function mmFlyToCountry(iso) {
 function mmExportCsv() {
   if (!MM._rankRows || !MM._rankRows.length) return;
   const u = MM.data.unit ? ' (' + MM.data.unit.trim() + ')' : '';
-  const lines = [['Rank', 'Country', 'ISO3', 'Value' + u, 'ObservationYear'].join(',')];
-  MM._rankRows.forEach((r, i) => lines.push([i + 1, '"' + r.name.replace(/"/g, '""') + '"', r.iso, r.v != null ? r.v : '', r.obs != null ? r.obs : ''].join(',')));
+  // Basis travels with the export — a CSV that does not distinguish a measurement from a
+  // forecast is exactly how a projection ends up quoted as fact in someone else's spreadsheet.
+  const lines = [['Rank', 'Country', 'ISO3', 'Value' + u, 'ObservationYear', 'Basis'].join(',')];
+  MM._rankRows.forEach((r, i) => lines.push([i + 1, '"' + r.name.replace(/"/g, '""') + '"', r.iso,
+    r.v != null ? r.v : '', r.obs != null ? r.obs : '', r.v == null ? '' : (r.est ? 'IMF estimate' : 'observed')].join(',')));
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
   a.download = `macro_${MM.ind}_${MM.region.replace(/\s+/g, '')}_${MM.year}.csv`;
@@ -7163,7 +7216,7 @@ function mmRank() {
     const r = mmVal(iso);
     // prefer the geometry's country name (curated payloads carry no name field)
     return { iso, name: MM.names[iso] || (c && c.name) || iso, iso2: (c && c.iso2) || MM_ISO2[iso] || '',
-             v: r ? r.v : null, obs: r ? r.obs : null };
+             v: r ? r.v : null, obs: r ? r.obs : null, est: r ? r.est : false };
   });
   rows.sort((a, b) => {
     if (a.v == null && b.v == null) return a.name.localeCompare(b.name);
@@ -7183,7 +7236,7 @@ function mmRank() {
         : '<span class="mm-flag mm-flag-txt">—</span>'}
       <div class="mm-cname"><div class="nm">${r.name}</div><span class="mm-code">${r.iso}</span></div>
       <div class="mm-val">${r.v != null
-        ? `<span class="v">${mmFmt(r.v)}${MM.data.unit}</span><span class="mm-obs">${r.obs}</span>`
+        ? `<span class="v">${mmFmt(r.v)}${MM.data.unit}</span><span class="mm-obs${r.est ? ' est' : ''}"${r.est ? ' title="IMF World Economic Outlook estimate — not a measured observation"' : ''}>${r.obs}${r.est ? ' est' : ''}</span>`
         : '<span class="v" style="color:var(--muted)">—</span><span class="mm-obs">no data</span>'}</div>
     </div>`).join('');
 }
@@ -7208,7 +7261,7 @@ function mmTip(ev, f) {
   const nm = MM.names[f.id] || (f.properties || {}).name || f.id;
   const r = mmVal(f.id);
   tip.innerHTML = r
-    ? `<b>${nm}</b><br>${MM.data.label}: <b>${mmFmt(r.v)}${MM.data.unit}</b> <span class="mm-obs">(${r.obs})</span>`
+    ? `<b>${nm}</b><br>${MM.data.label}: <b>${mmFmt(r.v)}${MM.data.unit}</b> <span class="mm-obs${r.est ? ' est' : ''}">(${r.obs}${r.est ? ' · IMF estimate' : ''})</span>`
     : `<b>${nm}</b><br><span class="mm-obs">no data</span>`;
   tip.style.display = 'block';
   const [x, y] = d3.pointer(ev, wrap);

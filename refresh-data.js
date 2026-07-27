@@ -1,9 +1,13 @@
-// MarketPulse — NSE snapshot refresh (run on the LOCAL machine, not the cloud host).
+// MarketPulse — data snapshot refresh (run on the LOCAL machine, not the cloud host).
 //
-// Why this exists: NSE blocks the deployed host's IP, so the live site can never fetch
-// bhavcopy / FII-DII / deals / results-calendar itself. Git is the transport instead — this
-// script warms those caches from an Indian residential IP, prunes the bhavcopy window, and
-// stages the result so it can be committed and pushed. Render redeploys and serves fresh data.
+// Why this exists: two different feeds cannot be fetched on the deployed host's request path.
+//   • NSE blocks the deployed host's IP outright, so bhavcopy / FII-DII / deals / results-calendar
+//     can never be fetched there at all.
+//   • The Macro Maps pull (World Bank WDI + IMF WEO) is ~800 KB and ~15s per indicator — fine in
+//     a background sweep, far too slow to build from scratch while a visitor waits.
+// Git is the transport for both: this script warms the caches from a residential IP, prunes the
+// bhavcopy window, and stages the result to be committed and pushed. Render redeploys and serves
+// fresh data immediately, then keeps macro topped up on its own background schedule.
 //
 //   node refresh-data.js            warm + prune + stage, then stop (review, commit yourself)
 //   node refresh-data.js --commit   also commit
@@ -28,13 +32,26 @@ const args = process.argv.slice(2);
 const DO_COMMIT = args.includes('--commit') || args.includes('--push');
 const DO_PUSH = args.includes('--push');
 
-// Endpoints that force an NSE fetch. Order matters: bhavcopy is the slow one, so it goes first
-// and the rest warm while it is still filling.
+// Endpoints that force an upstream fetch. Order matters: bhavcopy is the slow one, so it goes
+// first and the rest warm while it is still filling. `warm=1` on the macro routes tells the
+// server to block until the rebuild lands instead of answering from the cache we mean to replace.
 const WARM = [
   ['/api/delivery-spikes?uni=Nifty%20500', 'bhavcopy delivery history (26 trading days)'],
   ['/api/fii-dii', 'FII/DII flows'],
   ['/api/deals', 'bulk & block deals'],
   ['/api/earnings-calendar', 'results calendar'],
+  // Macro Maps (World Bank WDI + IMF WEO via DBnomics). Not IP-blocked like NSE, but each
+  // indicator is a ~800 KB / 15s pull that the free tier cannot do on a request path — so the
+  // snapshots ship via git too and the deployed server only has to keep them topped up.
+  ['/api/macro?ind=inflation&warm=1',    'macro · inflation'],
+  ['/api/macro?ind=gdp&warm=1',          'macro · GDP growth'],
+  ['/api/macro?ind=unemployment&warm=1', 'macro · unemployment'],
+  ['/api/macro?ind=debt&warm=1',         'macro · govt debt'],
+  ['/api/macro?ind=cab&warm=1',          'macro · current account'],
+  ['/api/macro?ind=interest&warm=1',     'macro · lending rate'],
+  ['/api/macro?ind=currency&warm=1',     'macro · currency vs USD'],
+  ['/api/macro?ind=renew_energy&warm=1', 'macro · renewables'],
+  ['/api/macro-geo',              'world map geometry'],
 ];
 
 const log = (...a) => console.log(...a);
@@ -83,7 +100,7 @@ function git(...a) {
   let failed = 0;
   try {
     await waitForServer(proc);
-    log('Server up. Warming NSE-backed caches…\n');
+    log('Server up. Warming NSE + macro caches…\n');
 
     for (const [route, label] of WARM) {
       const t0 = Date.now();
@@ -110,8 +127,8 @@ function git(...a) {
   const { kept, dropped } = pruneBhav();
   log(`  kept ${kept} most recent, removed ${dropped} older`);
 
-  // Stage only the NSE snapshots — never `git add -A`, which would sweep in unrelated edits.
-  log('\nStaging NSE snapshots…');
+  // Stage only the cache snapshots — never `git add -A`, which would sweep in unrelated edits.
+  log('\nStaging snapshots…');
   git('add', '--', '.cache/');
   const staged = git('diff', '--cached', '--name-only').split('\n').filter(Boolean);
   if (!staged.length) {
@@ -130,7 +147,7 @@ function git(...a) {
   }
 
   const stamp = new Date().toISOString().slice(0, 10);
-  git('commit', '-m', `Refresh NSE data snapshots (${stamp})`);
+  git('commit', '-m', `Refresh data snapshots (${stamp})`);
   log('\nCommitted.');
 
   if (DO_PUSH) {

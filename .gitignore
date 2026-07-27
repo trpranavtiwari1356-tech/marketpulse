@@ -13,6 +13,12 @@ node_modules/
 !.cache/fiidii.json
 !.cache/deals.json
 !.cache/ecal.json
+# Macro Maps. Not NSE-blocked, but the same argument applies for a different reason: the World
+# Bank + IMF pull is ~800 KB per indicator and takes ~15s from a fast line, which is what used to
+# time out and 502 on the free tier. Committing the built snapshots means a fresh deploy serves
+# real macro data on its FIRST request instead of waiting on DBnomics, and the background sweep
+# then keeps them current. ~1 MB total, all public reference data.
+!.cache/macro_*.json
 # Daily bhavcopy = delivery % + volume conviction. ~185 KB raw each, but git zlib-packs them to
 # ~64 KB, and the refresh script prunes to the 30-day window the engine actually reads.
 # Do NOT pre-gzip these — that defeats git's delta compression and makes history bigger.

@@ -1350,14 +1350,206 @@ function parseSwotWidget(html, sym) {
   return { sym, name: nameM ? rssDecode(nameM[1]) : sym, counts, items, total,
     sourceUrl: urlM ? urlM[1] : `https://trendlyne.com/equity/?q=${encodeURIComponent(sym)}`, asOf: new Date().toISOString() };
 }
+// Trendlyne answers a residential IP but returns 403 to a datacenter one, so the deployed site
+// could never load a SWOT while local development always could — which is why the audit saw a
+// hard 403 on an ordinary symbol. It stays the preferred source where it is reachable, behind a
+// circuit breaker so a blocked host costs one slow call an hour instead of one per request.
+const _swotBreaker = { fails: 0, openUntil: 0, lastError: null };
+const SWOT_BREAK_AFTER = 2, SWOT_BREAK_MS = 60 * 60e3;
+// SWOT_LOCAL_ONLY=1 skips the third party entirely and always uses the in-house engine. Set it
+// on any host whose IP is blocked (so nobody pays even the first doomed call), or to run the
+// product with no third-party SWOT dependency at all.
+const SWOT_LOCAL_ONLY = process.env.SWOT_LOCAL_ONLY === '1';
+async function fetchTrendlyneSwot(sym) {
+  if (SWOT_LOCAL_ONLY) throw new Error('third-party SWOT disabled (SWOT_LOCAL_ONLY)');
+  if (Date.now() < _swotBreaker.openUntil) throw new Error(_swotBreaker.lastError || 'provider_blocked');
+  const url = `https://trendlyne.com/web-widget/swot-widget/Poppins/${encodeURIComponent(sym)}/?posCol=00A25B&primaryCol=006AFF&negCol=EB3B00&neuCol=F7941E`;
+  try {
+    const r = await fetchT(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*' } }, 6000);
+    if (!r.ok) throw new Error('Trendlyne HTTP ' + r.status);
+    const data = parseSwotWidget(await r.text(), sym);
+    if (!data.total) throw new Error('Trendlyne returned an empty SWOT');
+    _swotBreaker.fails = 0; _swotBreaker.openUntil = 0; _swotBreaker.lastError = null;
+    return { ...data, provider: 'trendlyne', providerLabel: 'Trendlyne', status: 'ok' };
+  } catch (e) {
+    _swotBreaker.fails++; _swotBreaker.lastError = String(e && e.message || e);
+    // A 403 is a standing decision about our IP, not a blip — open the breaker immediately
+    // rather than making every visitor pay a doomed round-trip first.
+    if (/403|401/.test(_swotBreaker.lastError) || _swotBreaker.fails >= SWOT_BREAK_AFTER) {
+      _swotBreaker.openUntil = Date.now() + SWOT_BREAK_MS;
+    }
+    throw e;
+  }
+}
+
+// ─────────── in-house SWOT (no third party, works from any IP) ───────────
+// Composed from engines MarketPulse already runs, so every bullet traces to a number the rest of
+// the app displays: filing forensics (Piotroski F, Altman Z″, accruals), the ratio table, the
+// TradingView trend/momentum snapshot, NSE delivery conviction, sector-peer percentile and live
+// news sentiment. Same deterministic, no-API-key philosophy as the Analyst Brief.
+//
+// The axes are the real SWOT ones, not just good/bad: Strengths and Weaknesses are INTERNAL and
+// present-tense (what the business and its balance sheet are today); Opportunities and Threats are
+// EXTERNAL or forward-looking (what the market, sector, calendar and news flow could do to it).
+const pct = v => `${v >= 0 ? '+' : ''}${v}%`;
+async function buildLocalSwot(sym) {
+  const st = resolveStock(sym);
+  // Resolved before the fan-out because the ratio verdicts depend on it: /api/ratios drops
+  // lenders wholesale, so this builder is the one consumer that must judge a bank's ratios
+  // against bank bands rather than generic ones.
+  const isLender = isLenderOrInsurer(st.sym, st.sector);
+  const [tvR, fundR, ratioR, delivR, sentiR, peerR, earnR] = await Promise.allSettled([
+    tvScan([sym]),
+    fundamentalsQuality(sym, st.sector),
+    withTimeout(computeRatios(TICKER_OVERRIDE[sym] || sym + '.NS', isLender), 9000),
+    withTimeout(deliveryAnalytics(sym), 9000),
+    withTimeout(holdingSentiment(sym), 8000),
+    withTimeout(peerCompare(sym), 14000),
+    withTimeout(earningsReport(sym), 10000),
+  ]);
+  const val = r => r.status === 'fulfilled' ? r.value : null;
+  const tv = (val(tvR) || {})[sym];
+  if (!tv || tv.close == null) throw new Error('No market data for ' + sym);
+  const fund = val(fundR), rat = val(ratioR), deliv = val(delivR), senti = val(sentiR), peers = val(peerR), earn = val(earnR);
+
+  const S = [], W = [], O = [], T = [];
+  const ratio = n => {
+    const r = rat && rat.ratios && rat.ratios.find(x => x.name === n);
+    return r && r.current != null ? r : null;
+  };
+
+  // ── internal: balance sheet & filing quality ──
+  if (fund && fund.fscore != null) {
+    const ev = fund.feval || 9, frac = fund.fscore / ev;
+    const tail = ev < 9 ? ` (${9 - ev} checks lacked filing data)` : '';
+    if (ev >= 5 && frac >= 7 / 9) S.push(`Piotroski F-Score ${fund.fscore}/${ev}${tail} — broad, filing-verified fundamental improvement`);
+    else if (ev >= 5 && frac <= 3 / 9) W.push(`Piotroski F-Score ${fund.fscore}/${ev}${tail} — fundamentals deteriorating across the filing checks`);
+  }
+  if (fund && fund.zZone === 'good' && fund.z != null) S.push(`Altman Z″ ${fund.z} — comfortably in the safe zone, low solvency risk`);
+  else if (fund && fund.zZone === 'weak' && fund.z != null) W.push(`Altman Z″ ${fund.z} — balance sheet sits in the distress zone`);
+  if (fund && fund.accrualsFlag === 'weak') W.push('Earnings quality flag — reported profit is running ahead of operating cash (high accruals)');
+  if (fund && fund.note === 'bank') O.push('Lender/insurer — statement forensics (F-Score, Z″) do not apply; judge on NIM, NPA and CASA from the investor presentation');
+
+  // ── internal: profitability, leverage, efficiency from the ratio table ──
+  // For a bank or insurer most of these are artefacts rather than signal: interest expense is
+  // cost-of-goods, so "EBIT margin" runs above 100% and "interest coverage 1.5x" reads as
+  // distress when it is simply how lending works. Restrict lenders to the ratios that do mean
+  // something for them and let the NIM/NPA/CASA note carry the rest. (`isLender` is resolved up
+  // at the fan-out, since computeRatios needs it to pick the right verdict bands.)
+  const PROFIT_RATIOS = isLender
+    ? [['Return on Equity (ROE)', '%'], ['Return on Assets (ROA)', '%'], ['Net Profit Margin', '%']]
+    : [['Return on Equity (ROE)', '%'], ['Return on Assets (ROA)', '%'], ['ROCE', '%'],
+       ['Net Profit Margin', '%'], ['Operating (EBIT) Margin', '%'], ['Current Ratio', 'x'], ['Asset Turnover', 'x']];
+  for (const [name, unit] of PROFIT_RATIOS) {
+    const r = ratio(name);
+    if (!r) continue;
+    if (r.verdict === 'good') S.push(`${name} at ${r.current}${unit} — ahead of the ${r.ideal} benchmark`);
+    else if (r.verdict === 'weak') W.push(`${name} at ${r.current}${unit} — short of the ${r.ideal} benchmark`);
+  }
+  if (!isLender) {
+    const de = ratio('Debt-to-Equity'), ic = ratio('Interest Coverage');
+    if (de && de.verdict === 'good') S.push(`Low leverage — debt-to-equity ${de.current}x against an ideal of ${de.ideal}`);
+    else if (de && de.verdict === 'weak') W.push(`Leveraged balance sheet — debt-to-equity ${de.current}x against an ideal of ${de.ideal}`);
+    if (ic && ic.verdict === 'weak') W.push(`Thin interest cover at ${ic.current}x — little cushion if rates or borrowings rise`);
+  }
+  // a multi-year ratio trend is genuinely internal and forward-leaning → Opportunity/Threat
+  for (const name of (isLender ? ['Return on Equity (ROE)', 'Net Profit Margin'] : ['Return on Equity (ROE)', 'Operating (EBIT) Margin'])) {
+    const r = ratio(name);
+    if (!r || !r.trend || r.trend.length < 3) continue;
+    const first = r.trend[0], last = r.trend[r.trend.length - 1];
+    if (first == null || last == null || !isFinite(first) || !isFinite(last)) continue;
+    const delta = +(last - first).toFixed(1);
+    if (delta >= 3) O.push(`${name} has improved from ${first}% to ${last}% across ${r.years.length} reported years — the trend is compounding, not a one-off`);
+    else if (delta <= -3) T.push(`${name} has deteriorated from ${first}% to ${last}% across ${r.years.length} reported years — a multi-year slide, not a single weak quarter`);
+  }
+
+  // ── internal: trend & positioning ──
+  const price = tv.close, s50 = tv.SMA50, s200 = tv.SMA200;
+  const above50 = s50 != null && price >= s50, above200 = s200 != null && price >= s200;
+  const r2 = v => v == null ? null : Math.round(v * 100) / 100;
+  if (above50 && above200) S.push(`Established uptrend — ₹${r2(price)} holds above both the 50-DMA (₹${r2(s50)}) and 200-DMA (₹${r2(s200)})`);
+  else if (!above50 && !above200) W.push(`Confirmed downtrend — trades below both the 50-DMA (₹${r2(s50)}) and 200-DMA (₹${r2(s200)})`);
+  else if (above200) W.push(`Trend cooling — still above the 200-DMA (₹${r2(s200)}) but has slipped under the 50-DMA (₹${r2(s50)})`);
+  else O.push(`Early trend repair — reclaimed the 50-DMA (₹${r2(s50)}) with the 200-DMA (₹${r2(s200)}) still overhead`);
+
+  const hi = tv.price_52_week_high, lo = tv.price_52_week_low;
+  if (hi) {
+    const fromHigh = +((price - hi) / hi * 100).toFixed(1);
+    if (fromHigh >= -3) O.push(`Within ${Math.abs(fromHigh)}% of the 52-week high — a breakout would put it in blue-sky territory`);
+    else if (fromHigh <= -30) T.push(`Trades ${Math.abs(fromHigh)}% below its 52-week high — deep drawdown, supply overhead on any rally`);
+  }
+  if (lo && price && +((price - lo) / lo * 100).toFixed(1) <= 8) T.push(`Sitting within 8% of the 52-week low — no demonstrated support beneath`);
+
+  // ── external: sector, flows, news, calendar ──
+  if (peers && peers.peers && peers.peers.length >= 5) {
+    const withPerf = peers.peers.filter(p => p.ret3m != null);
+    const mine = withPerf.find(p => p.self);
+    if (mine && withPerf.length >= 5) {
+      const pp = Math.round(withPerf.filter(p => p.ret3m < mine.ret3m).length / withPerf.length * 100);
+      if (pp >= 60) S.push(`Sector leadership — outperforms ${pp}% of ${peers.sector} peers over 3 months`);
+      else if (pp <= 35) T.push(`Sector laggard — trails ${100 - pp}% of ${peers.sector} peers over 3 months`);
+    }
+  }
+  if (tv['Perf.3M'] != null) {
+    const p3 = +tv['Perf.3M'].toFixed(1);
+    if (p3 >= 8) O.push(`Momentum building — ${pct(p3)} over 3 months${tv['Perf.Y'] != null ? `, ${pct(+tv['Perf.Y'].toFixed(1))} over a year` : ''}`);
+    else if (p3 <= -8) T.push(`Negative momentum — ${pct(p3)} over 3 months${tv['Perf.Y'] != null ? `, ${pct(+tv['Perf.Y'].toFixed(1))} over a year` : ''}`);
+  }
+  if (deliv && deliv.signal && deliv.signal.tone === 'good') S.push(`${deliv.signal.label} — ${deliv.signal.text} (NSE delivery data, ${deliv.asOf})`);
+  else if (deliv && deliv.signal && deliv.signal.tone === 'bad') T.push(`${deliv.signal.label} — ${deliv.signal.text} (NSE delivery data, ${deliv.asOf})`);
+  if (senti && senti.basis === 'relevant' && senti.scored >= 3) {
+    if (senti.score10 >= 6.5) O.push(`Supportive news flow — ${senti.score10}/10 (${senti.label}) across ${senti.scored} on-topic headlines`);
+    else if (senti.score10 <= 3.5) T.push(`Negative news flow — ${senti.score10}/10 (${senti.label}) across ${senti.scored} on-topic headlines`);
+  }
+  if (tv.beta_1_year != null && tv.beta_1_year >= 1.3) T.push(`Beta ${+tv.beta_1_year.toFixed(2)} — amplifies index drawdowns by roughly ${Math.round((tv.beta_1_year - 1) * 100)}%`);
+  if (tv['Volatility.D'] != null) {
+    const ann = +(tv['Volatility.D'] * Math.sqrt(252)).toFixed(0);
+    if (ann >= 40) T.push(`High volatility ~${ann}% annualised — position sizing matters more than the entry`);
+  }
+  const pe = tv.price_earnings_ttm;
+  if (pe != null && pe > 0) {
+    if (pe <= 15) O.push(`Trades at ${+pe.toFixed(1)}x trailing earnings — undemanding if profitability holds`);
+    else if (pe >= 60) T.push(`Trades at ${+pe.toFixed(1)}x trailing earnings — priced for sustained high growth, little margin for a miss`);
+  }
+  if (earn && earn.next && earn.next.daysTo != null && earn.next.daysTo >= 0 && earn.next.daysTo <= 21) {
+    T.push(`Results due ${earn.next.dates[0]}${earn.next.estimate ? ' (estimated)' : ''} in ${earn.next.daysTo} day(s)${earn.stats ? ` — this stock's average post-results 1-day move is ±${earn.stats.avgAbs1d}%` : ''}`);
+  }
+
+  const items = { strengths: S, weaknesses: W, opportunities: O, threats: T };
+  const counts = { strengths: S.length, weaknesses: W.length, opportunities: O.length, threats: T.length };
+  const total = S.length + W.length + O.length + T.length;
+  const engines = { price: true, fundamentals: !!(fund && fund.quality != null), ratios: !!rat,
+                    delivery: !!deliv, news: !!senti, peers: !!(peers && peers.peers), earnings: !!earn };
+  const coverage = Object.values(engines).filter(Boolean).length;
+  return {
+    sym: st.sym, name: st.name || sym, counts, items, total,
+    provider: 'marketpulse', providerLabel: 'MarketPulse analysis', status: 'ok',
+    methodology: 'Derived from filing forensics (Piotroski F-Score, Altman Z″, accruals), the reported ratio history, live price/trend data, NSE delivery conviction, sector-peer performance and news sentiment. Rule-based and deterministic — no third-party SWOT provider.',
+    engines, coverage: `${coverage}/7 engines`,
+    confidence: coverage >= 6 ? 'High' : coverage >= 4 ? 'Medium' : 'Low',
+    sourceUrl: null, asOf: new Date().toISOString(),
+  };
+}
+
+// Preferred provider first, own engine second — the caller always gets a usable SWOT.
 async function fetchSwot(sym) {
   const hit = _swotCache.get(sym);
   if (hit && Date.now() - hit.at < SWOT_TTL) return hit.data;
-  const url = `https://trendlyne.com/web-widget/swot-widget/Poppins/${encodeURIComponent(sym)}/?posCol=00A25B&primaryCol=006AFF&negCol=EB3B00&neuCol=F7941E`;
-  const r = await fetchT(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*' } });
-  if (!r.ok) throw new Error('Trendlyne HTTP ' + r.status);
-  const data = parseSwotWidget(await r.text(), sym);
-  if (data.total > 0) { _swotCache.set(sym, { at: Date.now(), data }); capCache(_swotCache, 300); }   // never cache an empty/miss
+  let data = null;
+  try { data = await fetchTrendlyneSwot(sym); }
+  catch (e) {
+    try {
+      data = await buildLocalSwot(sym);
+      data.note = 'Generated in-house — the third-party SWOT provider is not reachable from this server.';
+    } catch (e2) {
+      // Both routes failed: surface a predictable shape, never a raw upstream status line.
+      const err = new Error('SWOT is unavailable for ' + sym);
+      err.code = 'SWOT_UNAVAILABLE'; err.reason = /403|401/.test(String(e && e.message)) ? 'provider_blocked' : 'no_data';
+      err.detail = String(e2 && e2.message || e2);
+      throw err;
+    }
+  }
+  if (data && data.total > 0) { _swotCache.set(sym, { at: Date.now(), data }); capCache(_swotCache, 300); }
   return data;
 }
 
@@ -1410,7 +1602,7 @@ async function holdingSentiment(sym) {
 // Trendlyne SWOT counts per holding (fetchSwot has its own 30-min cache) — advisory flag input
 async function holdingSwot(sym) {
   const j = await fetchSwot(sym);
-  return j && j.total > 0 ? { ...j.counts } : null;
+  return j && j.total > 0 ? { ...j.counts, provider: j.provider } : null;
 }
 // Sector-peer 3-month performance: one batched TV scan of every Nifty-500 constituent in the
 // holdings' sectors, so each holding can be ranked against its own sector (percentile).
@@ -1740,6 +1932,12 @@ const RATIO_DEFS = [
   { name: 'Return on Equity (ROE)', cat: 'Profitability', unit: '%', ideal: '> 15%', higher: true, good: 15, weak: 8,
     f: d => (d.NetIncome != null && d.StockholdersEquity > 0) ? d.NetIncome / d.StockholdersEquity * 100 : null },
   { name: 'Return on Assets (ROA)', cat: 'Profitability', unit: '%', ideal: '> 5% (banks > 1.5%)', higher: true, good: 5, weak: 2,
+    // A lender's balance sheet IS its inventory — assets run an order of magnitude larger per
+    // rupee of profit than a manufacturer's, so no bank can clear a 5% bar. The `ideal` string
+    // always said "banks > 1.5%" but nothing implemented it, so every Indian bank scored 'weak'
+    // (HDFCBANK 1.4%, SBI ~1.0%) and the in-house SWOT filed a healthy lender's ROA as a
+    // Weakness. RBI treats ~1.5% as sound for an Indian bank; below ~0.75% is genuinely thin.
+    lender: { good: 1.5, weak: 0.75, ideal: '> 1.5% (banks)' },
     f: d => (d.NetIncome != null && d.TotalAssets > 0) ? d.NetIncome / d.TotalAssets * 100 : null },
   { name: 'ROCE', cat: 'Profitability', unit: '%', ideal: '> 15%', higher: true, good: 15, weak: 8,
     f: d => { const e = ebitOf(d), cap = (d.TotalAssets != null && d.CurrentLiabilities != null) ? d.TotalAssets - d.CurrentLiabilities : null; return (e != null && cap > 0) ? e / cap * 100 : null; } },
@@ -1756,10 +1954,14 @@ const RATIO_DEFS = [
   { name: 'Asset Turnover', cat: 'Efficiency', unit: 'x', ideal: '> 0.5', higher: true, good: 0.5, weak: 0.3,
     f: d => (d.TotalRevenue != null && d.TotalAssets) ? d.TotalRevenue / d.TotalAssets : null },
 ];
-function verdictOf(def, v) {
+// `isLender` swaps in a def's sector-specific bands where it declares them (see ROA). Ratios with
+// no `lender` block are judged identically for everyone — the lender-only distortions that have
+// no honest threshold at all (EBIT margin, D/E, interest coverage) are excluded upstream instead.
+function verdictOf(def, v, isLender) {
   if (v == null) return 'avg';
-  if (def.higher) return v >= def.good ? 'good' : (v < def.weak ? 'weak' : 'avg');
-  return v <= def.good ? 'good' : (v > def.weak ? 'weak' : 'avg');
+  const b = (isLender && def.lender) ? def.lender : def;
+  if (def.higher) return v >= b.good ? 'good' : (v < b.weak ? 'weak' : 'avg');
+  return v <= b.good ? 'good' : (v > b.weak ? 'weak' : 'avg');
 }
 function round2(v, dp) { return (v == null || !isFinite(v)) ? null : +v.toFixed(dp); }
 
@@ -1839,8 +2041,11 @@ function computeForensics(byYear, allYears) {
 }
 
 const _ratioCache = new Map();   // ticker -> { at, data }
-async function computeRatios(ticker) {
-  const hit = _ratioCache.get(ticker);
+// `isLender` only selects sector-specific verdict bands; the computed numbers are identical, so
+// it rides in the cache key rather than forcing a separate fetch.
+async function computeRatios(ticker, isLender = false) {
+  const key = isLender ? ticker + '|lender' : ticker;
+  const hit = _ratioCache.get(key);
   if (hit && Date.now() - hit.at < 30 * 60e3) return hit.data;   // 30-min cache
   const [ts, ks] = await Promise.all([yahooTimeseries(ticker), yahooKeyStats(ticker)]);
   if (!ts) return null;
@@ -1855,8 +2060,11 @@ async function computeRatios(ticker) {
       if (v != null && isFinite(v)) { years.push(y); trend.push(round2(v, def.unit === 'x' ? 2 : 1)); }
     }
     if (!trend.length) continue;   // ratio not computable for this company → skip
-    ratios.push({ name: def.name, cat: def.cat, unit: def.unit, ideal: def.ideal, higher: def.higher,
-      years, trend, current: trend[trend.length - 1], verdict: verdictOf(def, trend[trend.length - 1]) });
+    // the displayed benchmark must be the one actually applied, or a bank reads "short of > 5%"
+    // while being judged against 1.5%
+    const ideal = (isLender && def.lender && def.lender.ideal) || def.ideal;
+    ratios.push({ name: def.name, cat: def.cat, unit: def.unit, ideal, higher: def.higher,
+      years, trend, current: trend[trend.length - 1], verdict: verdictOf(def, trend[trend.length - 1], isLender) });
   }
   if (ks) {
     const dks = ks.defaultKeyStatistics || {}, sd = ks.summaryDetail || {};
@@ -1871,7 +2079,7 @@ async function computeRatios(ticker) {
   const data = { symbol: ticker, years: allYears, latestFY: allYears[allYears.length - 1],
     currency: (ts[0] && ts[0][ts[0].meta.type[0]] && ts[0][ts[0].meta.type[0]][0] && ts[0][ts[0].meta.type[0]][0].reportedValue && ts[0][ts[0].meta.type[0]][0].currencyCode) || null,
     ratios, forensics: computeForensics(byYear, allYears), source: 'live', asOf: new Date().toISOString() };
-  _ratioCache.set(ticker, { at: Date.now(), data });
+  _ratioCache.set(key, { at: Date.now(), data });
   capCache(_ratioCache, 300);
   return data;
 }
@@ -2592,8 +2800,10 @@ async function buildThesis(sym) {
   if (senti && senti.basis === 'relevant' && senti.scored >= 3)
     (senti.score10 >= 6.5 ? bull : senti.score10 <= 3.5 ? bear : watch).push(`Live news flow scores ${senti.score10}/10 (${senti.label}) across ${senti.scored} on-topic headlines`);
   if (swot && (swot.strengths || swot.threats)) {
-    if (swot.strengths >= 2 * (swot.threats || 1) && swot.strengths >= 8) bull.push(`Trendlyne SWOT skews positive — ${swot.strengths} strengths vs ${swot.threats} threats`);
-    else if (swot.threats > swot.strengths) bear.push(`Trendlyne SWOT flags more threats (${swot.threats}) than strengths (${swot.strengths})`);
+    // credit whichever provider actually answered — in-house when Trendlyne is unreachable
+    const who = swot.provider === 'trendlyne' ? 'Trendlyne SWOT' : 'SWOT';
+    if (swot.strengths >= 2 * (swot.threats || 1) && swot.strengths >= 8) bull.push(`${who} skews positive — ${swot.strengths} strengths vs ${swot.threats} threats`);
+    else if (swot.threats > swot.strengths) bear.push(`${who} flags more threats (${swot.threats}) than strengths (${swot.strengths})`);
   }
   // risk & events
   if (s.vol != null && s.vol >= 40) watch.push(`High volatility ~${s.vol}% annualised — expect wide swings, size positions accordingly`);
@@ -2989,27 +3199,64 @@ async function sparksData() {
 //     latest observation year explicitly.
 //   • Monthly/intraday macro (RBI repo, India CPI/WPI MoM, INR/USD, FII/DII) is a separate
 //     India-specific layer (phase 2) — RBI/NSE publish those monthly or daily.
+// TWO PROVIDERS, one payload. World Bank WDI is the source of measured history but its newest
+// observation is 2023 (verified: every one of its 266 inflation series stops there), which is why
+// the map used to dead-end at 2023. IMF's World Economic Outlook — same DBnomics host, so no new
+// reachability risk — carries 1980→2030 including real 2024/2025/2026 figures, so it extends each
+// country's line past the last World Bank actual.
+//
+//   wb    — World Bank WDI indicator code (measured actuals)
+//   weo   — IMF WEO subject code, or null where the WEO has no comparable series
+//   blend — 'append'  : WDI actuals, then WEO for the years after each country's last actual
+//           'weo'     : WEO for the whole series (used where the two measure different things)
+//   tol   — handover sanity check, in the indicator's own units. On the last year both sources
+//           cover, |WDI − WEO| must be within `tol` before that country's line is extended.
+//           Without it a definitional gap (ILO-modelled vs national unemployment differ by up to
+//           5.5pp on some countries) would render as a fake cliff at the 2023→2024 boundary.
+//           Measured on 10 large economies: inflation/GDP/current-account agree to <0.1pp median,
+//           so their tolerance is generous; unemployment is tighter because its outliers are real.
 const WB_INDICATORS = {
-  inflation:    { code: 'FP.CPI.TOTL.ZG',    label: 'Inflation Rate',      unit: '%',
-                  desc: 'Consumer price inflation, annual average % (CPI YoY).' },
-  interest:     { code: 'FR.INR.LEND',       label: 'Lending Interest Rate', unit: '%',
-                  desc: 'Commercial-bank lending rate (World Bank WDI). Not the policy rate — true repo/fed-funds rates need FRED/central-bank feeds (planned). Sparse for the Eurozone.' },
-  gdp:          { code: 'NY.GDP.MKTP.KD.ZG', label: 'GDP Growth',          unit: '%',
-                  desc: 'Real GDP growth, annual %.' },
-  unemployment: { code: 'SL.UEM.TOTL.ZS',    label: 'Unemployment Rate',   unit: '%',
-                  desc: 'Unemployment, % of labour force (ILO modelled estimate).' },
-  debt:         { code: 'GC.DOD.TOTL.GD.ZS', label: 'Govt Debt to GDP',    unit: '%',
-                  desc: 'Central-government debt, % of GDP. WDI coverage is patchy — countries without recent filings are greyed out.' },
-  currency:     { code: 'PA.NUS.FCRF',       label: 'Currency vs USD',     unit: '%', transform: 'appreciationYoY',
+  inflation:    { wb: 'FP.CPI.TOTL.ZG', weo: 'PCPIPCH', blend: 'append', tol: 2.0,
+                  label: 'Inflation Rate',      unit: '%',
+                  desc: 'Consumer price inflation, annual average % (CPI YoY). World Bank actuals, extended with IMF WEO estimates for the most recent years.' },
+  interest:     { wb: 'FR.INR.LEND',    weo: null,
+                  label: 'Lending Interest Rate', unit: '%',
+                  desc: 'Commercial-bank lending rate (World Bank WDI). Not the policy rate — true repo/fed-funds rates need FRED/central-bank feeds (planned). Sparse for the Eurozone, and the IMF WEO has no comparable series, so this tab ends at the last World Bank observation.' },
+  gdp:          { wb: 'NY.GDP.MKTP.KD.ZG', weo: 'NGDP_RPCH', blend: 'append', tol: 2.0,
+                  label: 'GDP Growth',         unit: '%',
+                  desc: 'Real GDP growth, annual %. World Bank actuals, extended with IMF WEO estimates for the most recent years.' },
+  unemployment: { wb: 'SL.UEM.TOTL.ZS', weo: 'LUR', blend: 'append', tol: 1.5,
+                  label: 'Unemployment Rate',  unit: '%',
+                  desc: 'Unemployment, % of labour force. World Bank figures are ILO-modelled; recent years come from the IMF WEO, which uses national definitions. Countries where the two disagree at the handover year are left ending at the last World Bank actual rather than shown with an artificial jump.' },
+  // Debt is deliberately WEO-only rather than blended. WDI's GC.DOD.TOTL.GD.ZS is CENTRAL-government
+  // debt while the WEO reports GENERAL-government (incl. states/local) — measured 5.8pp median and
+  // 90pp maximum disagreement, so appending one to the other would be meaningless. The WEO also
+  // covers 194 countries to 2026 against WDI's sparse filings, so it wins on coverage too.
+  debt:         { wb: null, weo: 'GGXWDG_NGDP', blend: 'weo',
+                  label: 'Govt Debt to GDP',   unit: '%',
+                  desc: 'General-government gross debt, % of GDP (IMF World Economic Outlook). Covers central plus state/local government, so it reads higher than a central-government-only measure.' },
+  currency:     { wb: 'PA.NUS.FCRF',    weo: null, transform: 'appreciationYoY',
+                  label: 'Currency vs USD',    unit: '%',
                   desc: 'Annual-average exchange-rate change vs USD. Positive = currency appreciated. Derived from official rates (LCU per USD); USA is the 0% base.' },
-  cab:          { code: 'BN.CAB.XOKA.GD.ZS', label: 'Current Account',     unit: '%',
-                  desc: 'Current-account balance, % of GDP. Negative = deficit (external funding need — watch for rupee-style FX pressure).' },
+  cab:          { wb: 'BN.CAB.XOKA.GD.ZS', weo: 'BCA_NGDPD', blend: 'append', tol: 2.0,
+                  label: 'Current Account',    unit: '%',
+                  desc: 'Current-account balance, % of GDP. Negative = deficit (external funding need — watch for rupee-style FX pressure). World Bank actuals, extended with IMF WEO estimates.' },
   // Energy — only ONE WDI energy series is still maintained to a recent year (renewables share
   // of final energy, ~2021). WDI's electricity-mix series (nuclear %, coal %, energy imports)
   // froze at 2014-15, so those live in macroCurated.json instead with more current figures.
-  renew_energy: { code: 'EG.FEC.RNEW.ZS',    label: 'Renewables (% energy)', unit: '%',
-                  desc: 'Renewable energy as a share of total final energy consumption (World Bank WDI, latest ~2021).' },
+  renew_energy: { wb: 'EG.FEC.RNEW.ZS', weo: null,
+                  label: 'Renewables (% energy)', unit: '%',
+                  desc: 'Renewable energy as a share of total final energy consumption (World Bank WDI, latest ~2021). No IMF WEO equivalent exists, so this tab ends at the World Bank observation.' },
 };
+
+// Trim history at the low end. The slider realistically gets used on the last few decades, and
+// keeping 1960→ would roughly double the committed snapshot for years nobody drags to.
+const MACRO_MIN_YEAR = 1990;
+// …and at the high end. The WEO publishes projections out to 2030, but a five-year-ahead forecast
+// is speculative enough that ending the slider there would misrepresent the map's usefulness (and
+// park the default view on a 2030 guess). Cap at the current calendar year: that keeps the map
+// current — it rolls forward on its own each January — without dressing forecasts up as coverage.
+const macroMaxYear = () => new Date().getFullYear();
 
 // Bundled ISO 3166-1 alpha-3 → alpha-2 (source: ISO-3166 CSV, baked in so country metadata
 // needs no runtime network call). Doubles as the "is a real country" allowlist: WDI mixes in
@@ -3051,77 +3298,273 @@ async function fetchJson(url, ms, label) {
   } finally { clearTimeout(timer); }
 }
 
-// country name is the last "– …"-delimited segment of the DBnomics series_name
-// (e.g. "Annual – Inflation, consumer prices (annual %) – India" → "India").
-function mmCountryName(seriesName, iso3) {
+// Country name from a DBnomics series_name. The two datasets put it at opposite ends:
+//   WDI → "Annual – Inflation, consumer prices (annual %) – India"   (last segment)
+//   WEO → "India – Current account balance (BCA_NGDPD) – Percent of GDP"  (first segment)
+// Reading the wrong end on the WEO would have labelled every country "Percent of GDP".
+function mmCountryName(seriesName, iso3, which) {
   if (!seriesName) return iso3;
   const parts = String(seriesName).split(/\s+[–-]\s+/);
-  const last = parts[parts.length - 1].trim();
-  return last || iso3;
+  const seg = (which === 'first' ? parts[0] : parts[parts.length - 1]).trim();
+  return seg || iso3;
+}
+
+// One DBnomics dataset + dimension filter → { iso3: { name, values: {year: v} } }.
+// `countryDim` differs per dataset ('country' on WDI, 'weo-country' on the WEO).
+async function dbnomicsSeries(dataset, dims, countryDim, nameAt, timeoutMs) {
+  const q = encodeURIComponent(JSON.stringify(dims));
+  const url = `https://api.db.nomics.world/v22/series/${dataset}?dimensions=${q}&observations=1&limit=1000`;
+  const j = await fetchJson(url, timeoutMs, 'DBnomics');
+  const docs = j && j.series && j.series.docs;
+  if (!Array.isArray(docs) || !docs.length) throw new Error('DBnomics returned no series for ' + dataset);
+  const byIso = {};
+  for (const d of docs) {
+    const iso3 = d.dimensions && d.dimensions[countryDim];
+    if (!iso3 || !MACRO_ISO[iso3]) continue;            // drops aggregates + non-ISO territories
+    const per = d.period || [], val = d.value || [];
+    const vals = {};
+    for (let i = 0; i < per.length; i++) {
+      const v = val[i], y = +per[i];
+      if (v == null || v === 'NA' || !isFinite(+v) || !(y >= MACRO_MIN_YEAR) || y > macroMaxYear()) continue;
+      vals[per[i]] = +v;
+    }
+    if (Object.keys(vals).length) byIso[iso3] = { name: mmCountryName(d.series_name, iso3, nameAt), values: vals };
+  }
+  // The WEO vintage rides on each DOC as `dataset_code` ("WEO:2025-04"), not on the series
+  // wrapper — and it is what tells us where measured actuals stop and projections begin.
+  return { byIso, vintage: (docs[0] && docs[0].dataset_code) || null };
+}
+
+const lastYearOf = vals => Math.max(...Object.keys(vals).map(Number));
+
+// Merge measured actuals with WEO estimates. Per country: keep every WDI actual, then append WEO
+// only for years beyond that country's last actual — and only if the two sources agree at the
+// handover year (see `tol` above). A country failing the check keeps its actuals and simply ends
+// early, which is the honest outcome; it is greyed out on later slider years like any other gap.
+// `weoEstFrom` is the first projected year of the WEO vintage in play (the April-2025 edition
+// carries actuals through 2024 and projects 2025 onward), used where a country's whole line comes
+// from the WEO and there is no WDI actual to mark the boundary.
+function blendMacro(wdi, weo, cfg, weoEstFrom) {
+  const weoOnly = iso3 => ({ name: weo[iso3].name, values: { ...weo[iso3].values }, estimateFrom: weoEstFrom || null });
+  if (cfg.blend === 'weo') {
+    const out = {};
+    for (const iso3 of Object.keys(weo)) out[iso3] = weoOnly(iso3);
+    return out;
+  }
+  const out = {};
+  for (const iso3 of Object.keys(wdi)) {
+    const values = { ...wdi[iso3].values };
+    let estimateFrom = null;
+    const w = weo[iso3];
+    if (w && cfg.blend === 'append') {
+      const lastActual = lastYearOf(values);
+      // agreement check on the newest year both cover
+      const shared = Object.keys(w.values).map(Number).filter(y => values[y] != null);
+      const handover = shared.length ? Math.max(...shared) : null;
+      const agrees = handover != null && Math.abs(values[handover] - w.values[handover]) <= (cfg.tol != null ? cfg.tol : 2);
+      if (agrees) {
+        for (const y of Object.keys(w.values)) {
+          if (+y > lastActual) { values[y] = w.values[y]; if (estimateFrom == null || +y < estimateFrom) estimateFrom = +y; }
+        }
+      }
+    }
+    out[iso3] = { name: wdi[iso3].name, values, estimateFrom };
+  }
+  // countries the WDI dropped entirely but the WEO covers (sparse indicators like debt/unemployment)
+  for (const iso3 of Object.keys(weo)) if (!out[iso3]) out[iso3] = weoOnly(iso3);
+  return out;
 }
 
 // One indicator, all countries, reshaped to { iso3: { name, iso2, values: {year: v} } }.
 // Cached in memory + on disk for 24h (annual data — nothing to gain from refetching intraday).
 const _macroMem = {};
-async function macroIndicator(ind, force) {
+// Build one indicator from scratch — the NETWORK path. Only ever called from the background
+// refresher, never from a request, so it can afford a generous timeout: the WDI leg alone is
+// ~790 KB / 15 s from a fast line, which is precisely what used to blow the 30 s request budget
+// and return 502 to the user. Nobody waits on this now.
+const MACRO_UPSTREAM_MS = 45000;
+async function macroBuild(ind) {
   const cfg = WB_INDICATORS[ind];
   if (!cfg) throw new Error('unknown indicator "' + ind + '"');
-  // force = the Macro page's ↻ Refresh button → skip the 24h caches and re-pull from DBnomics
-  if (!force && _macroMem[ind] && Date.now() - _macroMem[ind].at < 24 * 3600e3) return _macroMem[ind].data;
+
+  const jobs = [];
+  jobs.push(cfg.wb  ? dbnomicsSeries('WB/WDI', { indicator: [cfg.wb] }, 'country', 'last', MACRO_UPSTREAM_MS)
+                    : Promise.resolve({ byIso: {}, vintage: null }));
+  jobs.push(cfg.weo ? dbnomicsSeries('IMF/WEO:latest', { 'weo-subject': [cfg.weo] }, 'weo-country', 'first', MACRO_UPSTREAM_MS)
+                    : Promise.resolve({ byIso: {}, vintage: null }));
+  // A WEO failure must not sink an indicator whose actuals arrived: the map is still correct,
+  // it just stops at the last measured year. The reverse (no WDI) is fatal only when the
+  // indicator has no WEO leg either.
+  const [wbRes, weoRes] = await Promise.allSettled(jobs);
+  const wdi = wbRes.status === 'fulfilled' ? wbRes.value.byIso : {};
+  const weo = weoRes.status === 'fulfilled' ? weoRes.value.byIso : {};
+  if (!Object.keys(wdi).length && !Object.keys(weo).length) {
+    throw new Error((wbRes.reason && wbRes.reason.message) || (weoRes.reason && weoRes.reason.message) || 'no data for ' + ind);
+  }
+
+  // currency tab: raw series is LCU-per-USD annual averages; convert to YoY % appreciation
+  // so the map reads "stronger vs USD = higher" (prev/cur − 1: fewer LCU per USD = gained).
+  if (cfg.transform === 'appreciationYoY') {
+    for (const iso3 of Object.keys(wdi)) {
+      const raw = wdi[iso3].values, out = {};
+      for (const y of Object.keys(raw)) {
+        const prev = raw[String(+y - 1)];
+        if (prev > 0 && raw[y] > 0) out[y] = (prev / raw[y] - 1) * 100;
+      }
+      wdi[iso3].values = out;
+    }
+  }
+
+  // "WEO:2025-04" → 2025 is the first projected year (that edition's actuals end at 2024)
+  const vintage = (weoRes.status === 'fulfilled' && weoRes.value.vintage) || null;
+  const vm = vintage && String(vintage).match(/(\d{4})-(\d{2})/);
+  const weoEstFrom = vm ? +vm[1] : null;
+
+  const merged = blendMacro(wdi, weo, cfg, weoEstFrom);
+
+  const outCountries = {}; const yearSet = new Set();
+  // Headline boundary for the UI note ("2024–2026 are IMF estimates"). Taken as the LATEST year
+  // that is still a measurement for some country, not the earliest — a single country whose
+  // World Bank series dried up in 2011 must not brand the whole map an estimate from 2012.
+  // Per-country `estimateFrom` stays authoritative for shading individual rows.
+  let actualsThrough = null;
+  for (const iso3 of Object.keys(merged)) {
+    const src = merged[iso3], years = Object.keys(src.values);
+    if (!years.length) continue;
+    const vals = {};
+    for (const y of years) { yearSet.add(+y); vals[y] = Math.round(src.values[y] * 100) / 100; }
+    outCountries[iso3] = { name: src.name, iso2: MACRO_ISO[iso3], values: vals };
+    if (src.estimateFrom) outCountries[iso3].estimateFrom = src.estimateFrom;
+    // a country's actuals run to estimateFrom-1; with no estimate boundary known, the series is
+    // either all measured (WDI-only indicator) or all projection-bearing WEO we cannot split
+    const lastActual = src.estimateFrom ? src.estimateFrom - 1 : (cfg.blend === 'weo' ? null : Math.max(...years.map(Number)));
+    if (lastActual != null) actualsThrough = Math.max(actualsThrough || 0, lastActual);
+  }
+  const years = [...yearSet].sort((a, b) => a - b);
+  if (!years.length) throw new Error('no observations for ' + ind);
+  const firstEstimate = actualsThrough != null && actualsThrough < years[years.length - 1] ? actualsThrough + 1 : null;
+
+  const usedWb = !!cfg.wb && !!Object.keys(wdi).length, usedWeo = !!cfg.weo && !!Object.keys(weo).length;
+  const source = usedWb && usedWeo ? 'World Bank WDI + IMF WEO (via DBnomics)'
+               : usedWeo ? `IMF World Economic Outlook${vintage ? ' ' + vintage.replace(/^WEO:/, '') : ''} (via DBnomics)`
+               : 'World Bank WDI (via DBnomics)';
+  return {
+    ind, label: cfg.label, unit: cfg.unit, desc: cfg.desc, freq: 'annual', source,
+    years, latestYear: years[years.length - 1],
+    // everything from `estimateFrom` onward is an IMF projection, not a measurement — the UI
+    // badges those years so a 2026 reading is never mistaken for an observed one
+    estimateFrom: firstEstimate, actualsThrough,
+    weoVintage: vintage, countries: outCountries, asOf: new Date().toISOString(),
+  };
+}
+
+// ─────────── macro cache: serve instantly, refresh behind the user's back ───────────
+// The old design awaited DBnomics on the request path with no durable fallback, so an upstream
+// hiccup became a 30-second wait and a 502 for every visitor. Now a request NEVER touches the
+// network: it answers from memory or disk and, if that copy is stale, kicks a refresh that lands
+// for the next caller. `.cache/macro_*.json` is committed to git (see .gitignore), so a fresh
+// deploy serves real data on its very first request even while the host's IP is being throttled.
+const MACRO_TTL = 24 * 3600e3;          // annual data — a daily refresh is plenty
+const _macroInflight = {};              // ind -> Promise, so N concurrent misses = 1 upstream call
+const _macroBreaker = {};               // ind -> { fails, openUntil, lastError, lastSuccessAt }
+const MACRO_BREAK_AFTER = 3;            // consecutive failures before the circuit opens
+const MACRO_BREAK_MS = 15 * 60e3;       // …and how long it stays open
+
+function macroBreaker(ind) {
+  return _macroBreaker[ind] || (_macroBreaker[ind] = { fails: 0, openUntil: 0, lastError: null, lastSuccessAt: null });
+}
+// Bump when the payload shape changes. A cached file written by an older build is treated as a
+// miss rather than served — without this, the 2023-only snapshots from before the IMF WEO leg
+// existed would sit inside their 24h TTL and keep the map stuck at 2023 after the deploy.
+const MACRO_SCHEMA = 4;
+function macroCached(ind) {
+  if (_macroMem[ind]) return _macroMem[ind];
   const disk = cacheLoad('macro_' + ind);
-  if (!force && disk.at && disk.data && Date.now() - disk.at < 24 * 3600e3) { _macroMem[ind] = disk; return disk.data; }
-  try {
-    // DBnomics WB/WDI: one indicator across every country in a single call. limit=1000 covers
-    // the ~266 country+aggregate series; observations=1 attaches the full period/value arrays.
-    const dims = encodeURIComponent(JSON.stringify({ indicator: [cfg.code] }));
-    const url = `https://api.db.nomics.world/v22/series/WB/WDI?dimensions=${dims}&observations=1&limit=1000`;
-    const j = await fetchJson(url, 30000, 'DBnomics');
-    const docs = j && j.series && j.series.docs;
-    if (!Array.isArray(docs) || !docs.length) throw new Error('DBnomics returned no series for ' + cfg.code);
-    const byIso = {};
-    for (const d of docs) {
-      const iso3 = d.dimensions && d.dimensions.country;
-      if (!iso3 || !MACRO_ISO[iso3]) continue;            // drops aggregates + non-ISO territories
-      const per = d.period || [], val = d.value || [];
-      const vals = {};
-      for (let i = 0; i < per.length; i++) {
-        const v = val[i];
-        if (v == null || v === 'NA' || !isFinite(+v)) continue;
-        vals[per[i]] = +v;
-      }
-      if (Object.keys(vals).length) byIso[iso3] = { name: mmCountryName(d.series_name, iso3), values: vals };
-    }
-    // currency tab: raw series is LCU-per-USD annual averages; convert to YoY % appreciation
-    // so the map reads "stronger vs USD = higher" (prev/cur − 1: fewer LCU per USD = gained).
-    if (cfg.transform === 'appreciationYoY') {
-      for (const iso3 of Object.keys(byIso)) {
-        const raw = byIso[iso3].values, out = {};
-        for (const y of Object.keys(raw)) {
-          const prev = raw[String(+y - 1)];
-          if (prev > 0 && raw[y] > 0) out[y] = (prev / raw[y] - 1) * 100;
-        }
-        byIso[iso3].values = out;
-      }
-    }
-    const outCountries = {}; const yearSet = new Set();
-    for (const iso3 of Object.keys(byIso)) {
-      const years = Object.keys(byIso[iso3].values);
-      if (!years.length) continue;
-      const vals = {};
-      for (const y of years) { yearSet.add(+y); vals[y] = Math.round(byIso[iso3].values[y] * 100) / 100; }
-      outCountries[iso3] = { name: byIso[iso3].name, iso2: MACRO_ISO[iso3], values: vals };
-    }
-    const years = [...yearSet].sort((a, b) => a - b);
-    if (!years.length) throw new Error('no observations for ' + cfg.code);
-    const data = { ind, label: cfg.label, unit: cfg.unit, desc: cfg.desc, freq: 'annual',
-      source: 'World Bank WDI (via DBnomics)', years, latestYear: years[years.length - 1],
-      countries: outCountries, asOf: new Date().toISOString() };
-    _macroMem[ind] = { at: Date.now(), data };
+  if (disk && disk.at && disk.data && disk.schema === MACRO_SCHEMA) { _macroMem[ind] = disk; return disk; }
+  return null;
+}
+// Kick a refresh unless one is already running or the breaker is open. Returns the in-flight
+// promise so a cold start can choose to await it; normal requests ignore the return value.
+function macroKickRefresh(ind) {
+  if (_macroInflight[ind]) return _macroInflight[ind];
+  const br = macroBreaker(ind);
+  if (Date.now() < br.openUntil) return null;
+  const p = macroBuild(ind).then(data => {
+    _macroMem[ind] = { at: Date.now(), schema: MACRO_SCHEMA, data };
     cacheSave('macro_' + ind, _macroMem[ind]);
+    br.fails = 0; br.openUntil = 0; br.lastError = null; br.lastSuccessAt = Date.now();
     return data;
-  } catch (e) {
-    if (disk.data) { _macroMem[ind] = disk; return disk.data; }   // serve stale on upstream failure
+  }).catch(e => {
+    br.fails++; br.lastError = String(e && e.message || e);
+    if (br.fails >= MACRO_BREAK_AFTER) br.openUntil = Date.now() + MACRO_BREAK_MS;
     throw e;
+  }).finally(() => { delete _macroInflight[ind]; });
+  _macroInflight[ind] = p;
+  p.catch(() => {});                    // background rejection must never be unhandled
+  return p;
+}
+
+// The request path. Always resolves fast; `wait` is only honoured when there is nothing cached
+// at all (genuine cold start), and even then it is capped well under the brief's 8-second bar.
+async function macroIndicator(ind, { force = false, wait = 7000, awaitRefresh = false } = {}) {
+  if (!WB_INDICATORS[ind]) throw new Error('unknown indicator "' + ind + '"');
+  const br = macroBreaker(ind);
+  let hit = macroCached(ind);
+  const stale = !hit || Date.now() - hit.at > MACRO_TTL;
+  if (force || stale) macroKickRefresh(ind);
+
+  // snapshot-building only (refresh-data): wait for the rebuild rather than answering from the
+  // copy it is meant to replace, so the committed file is actually the new one
+  if (awaitRefresh && _macroInflight[ind]) {
+    const fresh = await Promise.race([_macroInflight[ind].catch(() => null), new Promise(r => setTimeout(() => r(null), wait))]);
+    if (fresh) hit = _macroMem[ind];
+  }
+
+  if (!hit) {
+    // Nothing on disk — first ever run for this indicator. Wait briefly for the refresh rather
+    // than failing outright, but hand back a proper error contract if it does not land in time.
+    const p = _macroInflight[ind];
+    if (p) {
+      const data = await Promise.race([p.catch(() => null), new Promise(r => setTimeout(() => r(null), wait))]);
+      if (data) hit = _macroMem[ind];
+    }
+    if (!hit) {
+      const err = new Error(br.lastError || 'macro data is still warming up');
+      err.code = Date.now() < br.openUntil ? 'UPSTREAM_UNAVAILABLE' : 'CACHE_WARMING';
+      err.retryable = true; err.cachedDataAvailable = false; err.source = 'DBnomics';
+      throw err;
+    }
+  }
+
+  const ageMs = Date.now() - hit.at;
+  const refreshStatus = Date.now() < br.openUntil ? 'unavailable' : (ageMs > MACRO_TTL ? 'delayed' : 'ok');
+  return {
+    ...hit.data,
+    meta: {
+      source: hit.data.source, sourceAsOf: hit.data.asOf,
+      servedAt: new Date().toISOString(),
+      cacheState: ageMs > MACRO_TTL ? 'stale' : 'fresh',
+      cacheAgeMs: ageMs, refreshStatus,
+      refreshing: !!_macroInflight[ind],
+      lastSuccessAt: br.lastSuccessAt ? new Date(br.lastSuccessAt).toISOString() : hit.data.asOf,
+      lastError: refreshStatus === 'ok' ? null : br.lastError,
+    },
+  };
+}
+
+// ─────────── scheduled macro refresh ───────────
+// The map is self-updating: every indicator is re-pulled on a timer rather than only when a
+// user happens to open the tab, so a new IMF vintage (which is what moves the series forward
+// into a new year) lands on its own. Indicators are staggered — eight ~800 KB pulls at once
+// would spike memory on a 512 MB free tier, and there is no deadline to race.
+const MACRO_SWEEP_MS = 6 * 3600e3;      // check 4x/day; each indicator still only refetches once TTL lapses
+async function macroSweep() {
+  const inds = Object.keys(WB_INDICATORS);
+  for (const ind of inds) {
+    const hit = macroCached(ind);
+    if (hit && Date.now() - hit.at < MACRO_TTL) continue;      // still fresh, nothing to do
+    try { await macroKickRefresh(ind); } catch { /* breaker records it; next sweep retries */ }
+    await new Promise(r => setTimeout(r, 4000));               // stagger
   }
 }
 
@@ -3189,6 +3632,24 @@ function macroCurated(ind) {
 function send(res, code, body, type) {
   res.writeHead(code, { 'Content-Type': type || 'application/json', 'Cache-Control': 'no-store' });
   res.end(body);
+}
+
+// One error shape for every route (audit 28-Jul-2026). The old handlers piped the upstream
+// exception straight to the browser, which is how users ended up reading "Trendlyne HTTP 403"
+// and "DBnomics timed out after 30s" in the product UI. `message` is what a user may see;
+// provider specifics stay in `detail`/logs where they belong.
+function apiError(code, message, opts = {}) {
+  const e = {
+    code, message,
+    retryable: opts.retryable !== false,
+    cachedDataAvailable: !!opts.cachedDataAvailable,
+  };
+  if (opts.source) e.source = opts.source;
+  if (opts.lastSuccessAt) e.lastSuccessAt = opts.lastSuccessAt;
+  if (opts.detail) e.detail = opts.detail;
+  // `error` is kept as a plain string alongside the structured object: older frontend code
+  // branches on `j.error` being truthy, and breaking that would blank working panels.
+  return { error: message, errorDetail: e };
 }
 
 // Per-IP rate limit for the EXPENSIVE endpoints only (audit 10-Jul-2026): /api/portfolio fans
@@ -3412,11 +3873,19 @@ const server = http.createServer(async (req, res) => {
 
     if (u.pathname === '/api/swot') {
       const sym = (u.searchParams.get('sym') || '').trim().toUpperCase().replace(/\.NS$/, '');
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      if (!sym) return send(res, 400, JSON.stringify(apiError('MISSING_PARAM', 'A stock symbol is required.', { retryable: false })));
       try {
         return send(res, 200, JSON.stringify(await fetchSwot(sym)));
       } catch (e) {
-        return send(res, 502, JSON.stringify({ error: String(e && e.message || e) }));
+        // 200 with an explicit unavailable state, not a 502: the panel renders a labelled
+        // fallback card instead of an error, and no raw provider status reaches the browser.
+        return send(res, 200, JSON.stringify({
+          sym, status: 'unavailable', reason: e.reason || 'no_data',
+          message: `A SWOT could not be assembled for ${sym}. This usually means the symbol has too little reported financial history to analyse.`,
+          counts: { strengths: 0, weaknesses: 0, opportunities: 0, threats: 0 },
+          items: { strengths: [], weaknesses: [], opportunities: [], threats: [] },
+          total: 0, asOf: new Date().toISOString(),
+        }));
       }
     }
 
@@ -3539,10 +4008,23 @@ const server = http.createServer(async (req, res) => {
 
     if (u.pathname === '/api/macro') {
       const ind = u.searchParams.get('ind') || 'inflation';
-      const force = u.searchParams.get('fresh') === '1';   // ↻ Refresh button bypasses the 24h cache
-      if (!WB_INDICATORS[ind]) return send(res, 400, JSON.stringify({ error: 'unknown indicator', available: Object.keys(WB_INDICATORS) }));
-      try { return send(res, 200, JSON.stringify(await macroIndicator(ind, force))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      const force = u.searchParams.get('fresh') === '1';   // ↻ Refresh triggers a background re-pull
+      if (!WB_INDICATORS[ind]) {
+        return send(res, 400, JSON.stringify(apiError('UNKNOWN_INDICATOR', 'Unknown macro indicator.',
+          { retryable: false, detail: { available: Object.keys(WB_INDICATORS) } })));
+      }
+      // warm=1 asks the server to BLOCK until the build lands instead of answering from cache.
+      // Only `npm run refresh-data` uses it (to produce the committed snapshot); the browser
+      // never sets it, so no visitor can opt into a slow request.
+      const warm = u.searchParams.get('warm') === '1';
+      try { return send(res, 200, JSON.stringify(await macroIndicator(ind, { force, wait: warm ? 120000 : 7000, awaitRefresh: warm }))); }
+      catch (e) {
+        // Only reachable on a genuine cold start with an empty cache — the served path above
+        // never depends on the network. 503, not 502: this is "not ready yet", and retryable.
+        return send(res, 503, JSON.stringify(apiError(e.code || 'UPSTREAM_UNAVAILABLE',
+          'Macro data is refreshing and no cached copy is available yet.',
+          { retryable: true, source: 'DBnomics', cachedDataAvailable: false })));
+      }
     }
 
     if (u.pathname === '/api/macro-curated') {
@@ -3624,6 +4106,10 @@ const server = http.createServer(async (req, res) => {
     // waits 3s so it never contends with the boot burst that caused the restart loop.
     refreshBreadth('Nifty 50').catch(() => {});
     setTimeout(() => refreshBreadth('Nifty 500').catch(() => {}), 3000);
+    // Macro still self-updates here, just later and slower: the committed .cache/macro_*.json
+    // snapshot means the page is already serving real data, so this only has to catch a new
+    // IMF vintage. Delayed well past boot so it never contends with the health check.
+    setTimeout(() => { macroSweep().catch(() => {}); setInterval(() => macroSweep().catch(() => {}), MACRO_SWEEP_MS); }, 120000);
   } else {
     topTrend('1 Day', 'Nifty 50', defCfg).catch(() => {});
     topTrend('1 Day', 'Nifty 500', defCfg).catch(() => {});
@@ -3639,10 +4125,12 @@ const server = http.createServer(async (req, res) => {
     fiidiiFlows().catch(() => {});
     dealsData().catch(() => {});
     earningsCalendar().catch(() => {});
-    // 5) warm the Macro Maps page (geometry + default tab) — both disk-cached, so this is
-    //    a no-op after the first ever run
+    // 5) warm the Macro Maps page — geometry plus a full indicator sweep, then keep sweeping so
+    //    the map picks up new World Bank/IMF vintages without anyone asking it to. Disk-cached,
+    //    so this is a no-op for any indicator already inside its TTL.
     macroGeo().catch(() => {});
-    macroIndicator('inflation').catch(() => {});
+    macroSweep().catch(() => {});
+    setInterval(() => macroSweep().catch(() => {}), MACRO_SWEEP_MS);
     // 6) official segment filings for the whole Nifty 500 (quarterly XBRL, disk-cached ~45d;
     //    a no-op once warm). Delayed past the boot burst; skipped on LIGHT_START hosts where
     //    NSE is unreachable — they serve the committed .cache/segfiled.json snapshot instead.
