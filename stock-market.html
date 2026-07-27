@@ -1500,6 +1500,9 @@
     font-size: .76rem; border: 1px solid var(--border); background: var(--surface2); color: var(--muted); cursor: pointer; transition: border-color .15s; }
   .mm-rt-pill:hover { border-color: var(--accent); }
   .mm-rt-dot { width: 8px; height: 8px; border-radius: 50%; }
+  /* vintage stamp — this strip is curated, not live, so it says so */
+  .mm-rt-age { margin-left: auto; font-size: .68rem; color: var(--muted); cursor: help; white-space: nowrap; }
+  .mm-rt-age.stale { color: var(--gold); font-weight: 600; }
   /* SVG overlay markers */
   .mm-marker-ring { opacity: .28; }
   .mm-marker:hover .mm-marker-ring { opacity: .5; }
@@ -7058,8 +7061,9 @@ function mmApplyData(data) {
   document.getElementById('macro-badge').textContent = data.curated
     ? `CURATED · ${data.source}`
     : `WORLD BANK · ANNUAL · ${data.years[0]}–${data.latestYear}`;
+  const curAge = data.curated ? mmCuratedAge(data.updated) : null;
   const src = data.curated
-    ? `<b>Source:</b> ${data.source} — hand-verified snapshot (single year, so the slider is fixed). Figures are rounded; edit <code>macroCurated.json</code> to update.`
+    ? `<b>Source:</b> ${data.source} — hand-verified snapshot (single year, so the slider is fixed).${curAge ? ` Last reviewed <b>${curAge.label}</b>${curAge.monthsOld >= 1 ? ` (${curAge.monthsOld} month${curAge.monthsOld > 1 ? 's' : ''} ago)` : ''}.` : ''} Figures are rounded; edit <code>macroCurated.json</code> to update.`
     : `<b>Source:</b> World Bank WDI (via DBnomics) — annual, published with a lag, so each country shows its own observation year (grey = nothing in the last 5 years).`;
   const impact = data.note ? ` <b>India lens:</b> ${data.note}` : '';
   document.getElementById('macro-note').innerHTML = `<b>${data.label}:</b> ${data.desc} ${src}${impact}`;
@@ -7397,15 +7401,47 @@ function mmJumpTo(id) {
   mmSelectRisk(d);
 }
 
+// "2026-07" or "2026-07-05" → { label, monthsOld }. Deliberately derived from the file's own
+// `updated` field and never from file mtime: git rewrites mtimes on checkout, so on the
+// deployed host every curated file would look like it was reviewed at deploy time.
+// Day precision is optional — write "2026-07-05" instead of "2026-07" for a tighter warning.
+function mmCuratedAge(updated) {
+  const m = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(String(updated || ''));
+  if (!m) return null;
+  const y = +m[1], mo = +m[2] - 1, day = m[3] ? +m[3] : null;
+  const when = new Date(y, mo, day || 1);
+  const now = new Date();
+  // With a day, age is real elapsed time; with only a month, fall back to whole-month distance
+  // so a file stamped "2026-07" isn't called stale on the 2nd of July.
+  const monthsOld = day
+    ? Math.floor((now - when) / 2629800000)
+    : (now.getFullYear() - y) * 12 + (now.getMonth() - mo);
+  return {
+    label: when.toLocaleDateString('en-IN', day
+      ? { day: 'numeric', month: 'short', year: 'numeric' }
+      : { month: 'short', year: 'numeric' }),
+    monthsOld,
+  };
+}
+
 function mmRenderRiskTicker() {
   if (!MM.geoRisk || !MM.geoRisk.chokepoints) return;
+  // These statuses are hand-maintained, not a live feed. The ticker is the always-visible
+  // surface, so it must carry its own vintage — otherwise a months-old "Elevated" on Hormuz
+  // reads as breaking news.
+  const age = mmCuratedAge(MM.geoRisk.updated);
+  const stale = age && age.monthsOld >= 1;
+  const stamp = age
+    ? `<span class="mm-rt-age${stale ? ' stale' : ''}" title="Hand-maintained in geopoliticalRisk.json — not a live feed.${stale ? ' Statuses may have changed since this was last reviewed.' : ''}">${stale ? '⚠ ' : ''}as of ${age.label}${stale ? ` · ${age.monthsOld} month${age.monthsOld > 1 ? 's' : ''} old` : ''}</span>`
+    : '';
   document.getElementById('macro-risk-ticker').innerHTML =
     '<span class="mm-rt-label">Geopolitical:</span>' +
     MM.geoRisk.chokepoints.map(d => {
       const c = MM_STATUS_COLOR[d.status.toLowerCase()] || 'var(--muted)';
       return `<button class="mm-rt-pill" onclick="mmJumpTo('${d.id}')"><span class="mm-rt-dot" style="background:${c}"></span>${d.short}: <b style="color:${c}">${d.status}</b></button>`;
-    }).join('');
+    }).join('') + stamp;
 }
 </script>
+
 </body>
 </html>

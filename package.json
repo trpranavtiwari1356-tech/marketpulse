@@ -5,7 +5,9 @@
   "description": "MarketPulse — live NSE stock dashboard, analytics & screener (zero-dependency Node server).",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "refresh-data": "node refresh-data.js",
+    "refresh-data:push": "node refresh-data.js --push"
   },
   "engines": {
     "node": ">=18"

@@ -8,6 +8,10 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = +process.env.PORT || 5173;   // override with PORT=xxxx to run a second instance
+// Constrained/cloud host: NSE blocks its IP outright, so NSE fetches hang rather than fail.
+// Hoisted here (it was computed inline at boot) because the data layer needs it too — see
+// loadBhavDay, which must not retry a host that can never succeed.
+const CLOUD_HOST = process.env.RENDER === 'true' || process.env.LIGHT_START === '1';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 // ─────────── hard-timeout fetch for EVERY upstream call (audit 10-Jul-2026) ───────────
@@ -1930,7 +1934,15 @@ async function loadBhavDay(d) {
   if (_bhav[key]) return _bhav[key];
   const disk = cacheLoad('bhav_' + key);
   if (disk.rows || disk.h) { _bhav[key] = disk; return disk; }
+  // On the cloud host NSE is unreachable by definition, so attempting ~40 archive fetches per
+  // cold start just burns the request on timeouts. Serve whatever the committed snapshot holds
+  // and report the rest as missing; the local machine is what refreshes these (see refresh-data).
+  if (CLOUD_HOST) { const miss = { h: 1 }; _bhav[key] = miss; return miss; }
   let out = null;
+  // Only a definitive "NSE served us a page and it has no file for this date" proves a holiday.
+  // A thrown fetch (DNS/timeout) or a 5xx/403 means WE couldn't reach NSE — that says nothing
+  // about whether the market traded, so it must not be persisted as a holiday.
+  let definitiveMiss = false;
   try {
     const r = await fetchT(`https://archives.nseindia.com/products/content/sec_bhavdata_full_${key}.csv`,
       { headers: { 'User-Agent': UA, 'Accept': 'text/csv,*/*', 'Referer': 'https://www.nseindia.com/' } });
@@ -1943,13 +1955,19 @@ async function loadBhavDay(d) {
       }
       if (Object.keys(rows).length > 200)
         out = { rows, iso: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` };
+      else definitiveMiss = true;         // 200 but not a real bhavcopy (NSE serves a stub on non-trading days)
+    } else if (r.status === 404) {
+      definitiveMiss = true;              // archive genuinely has no file → market was shut
     }
-  } catch (e) { /* treated as missing below */ }
+  } catch (e) { /* unreachable — leave definitiveMiss false so we retry later */ }
   if (!out) {
     const miss = { h: 1 };
     _bhav[key] = miss;
-    if (Date.now() - d.getTime() > 2 * 86400e3) cacheSave('bhav_' + key, miss);   // real holiday → never refetch
-    else setTimeout(() => { if (_bhav[key] === miss) delete _bhav[key]; }, 45 * 60e3);   // today's file may not be out yet
+    // Persist "holiday" only when NSE actually told us the day has no file. Otherwise keep it
+    // in memory only and let it retry, so an NSE outage or a cloud-IP block can't permanently
+    // blank out real trading days from the delivery history.
+    if (definitiveMiss && Date.now() - d.getTime() > 2 * 86400e3) cacheSave('bhav_' + key, miss);
+    else setTimeout(() => { if (_bhav[key] === miss) delete _bhav[key]; }, 45 * 60e3);
     return miss;
   }
   _bhav[key] = out;
@@ -3161,6 +3179,9 @@ function macroCurated(ind) {
   return { ind, label: cfg.label, unit: cfg.unit || '', desc: cfg.desc || '', note: cfg.note || '',
     highlight: cfg.highlight || null, freq: 'annual', curated: true,
     source: (cfg.source || 'curated') + (cfg.year ? ' ' + cfg.year : ''),
+    // `updated` = when a human last reviewed the file; `asOf` is only when this response was
+    // built. Without the former the client would date hand-maintained figures to "now".
+    updated: doc.updated || null,
     years: [year], latestYear: year, countries, asOf: new Date().toISOString() };
 }
 
@@ -3195,6 +3216,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (HEAVY_PATHS.has(u.pathname) && rateLimited(req))
       return send(res, 429, JSON.stringify({ error: 'Too many requests — please slow down (30 heavy calls/min).' }));
+
     if (u.pathname === '/api/trend') {
       const tf = u.searchParams.get('tf') || '1 Day';
       const uni = u.searchParams.get('uni') || 'Nifty 50';
@@ -3580,8 +3602,7 @@ const server = http.createServer(async (req, res) => {
   // 2) refresh the official NSE constituents now, then daily — but only on a full host.
   //    On cloud (NSE blocks the IP) this fetch just hangs; the committed .cache/constituents.json
   //    hydrated in step 1 already carries the full Nifty-500 universe, so we skip it.
-  const _light = process.env.RENDER === 'true' || process.env.LIGHT_START === '1';
-  if (!_light) {
+  if (!CLOUD_HOST) {
     await loadConstituents().catch(() => {});
     setInterval(() => loadConstituents().catch(() => {}), 24 * 3600e3);
     loadEquityMaster().catch(() => {});                                    // refresh the broad search list
@@ -3593,7 +3614,7 @@ const server = http.createServer(async (req, res) => {
   //    the double Nifty-500 warm-up, and its NSE fetches hang forever (NSE blocks cloud IPs).
   //    There, every feature simply lazy-loads on first request instead. Render sets RENDER=true
   //    automatically, so this needs no manual config; a full box is unaffected.
-  const LIGHT_START = process.env.RENDER === 'true' || process.env.LIGHT_START === '1';
+  const LIGHT_START = CLOUD_HOST;
   const defCfg = parseMaConfig(null, null);   // default SMA 20/200 on 1 Day
   if (LIGHT_START) {
     console.log('LIGHT_START: constrained host detected — skipping heavy warm-up, features load on demand.');

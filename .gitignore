@@ -1,14 +1,22 @@
 # dependencies (none today — zero-dep — but future-proof)
 node_modules/
 
-# runtime cache — regenerated on the server. Keep constituents.json (Nifty-500 universe),
-# equitymaster.json (full listed-stock search universe) and segfiled.json (official Nifty-500
-# segment-revenue snapshot from NSE quarterly XBRL) so all three survive on the cloud host,
-# whose IP NSE blocks — the local machine refreshes them and commits.
+# Runtime cache. Most of it is Yahoo-derived and regenerates anywhere, so it stays ignored.
+# The exceptions below are all NSE-sourced: NSE blocks the cloud host's IP outright, so the
+# deployed site can never fetch them itself. Git is therefore the transport — the local machine
+# (whose IP NSE allows) refreshes these and commits them via `npm run refresh-data`.
+# Everything committed here is public market data, no credentials.
 .cache/*
 !.cache/constituents.json
 !.cache/equitymaster.json
 !.cache/segfiled.json
+!.cache/fiidii.json
+!.cache/deals.json
+!.cache/ecal.json
+# Daily bhavcopy = delivery % + volume conviction. ~185 KB raw each, but git zlib-packs them to
+# ~64 KB, and the refresh script prunes to the 30-day window the engine actually reads.
+# Do NOT pre-gzip these — that defeats git's delta compression and makes history bigger.
+!.cache/bhav_*.json
 
 # local tooling / editor / preview config — not needed in production
 .claude/

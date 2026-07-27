@@ -41,6 +41,27 @@ That's it — no `npm install`, no dependencies (uses Node's built-in `fetch` an
 | **Position Sizing → Single Trade** | Client-side + Yahoo quote | Risk-based share-quantity calculator: `qty = (capital × risk%) ÷ \|entry − stop\|`. Long/short, live entry price via `/api/quote`, reward-to-risk from an optional target, leverage/invalid-stop warnings. Capital & risk % persist in localStorage |
 | **Position Sizing → Portfolio Allocator** | `/api/possize` (reuses backtest pipeline) | Risk-parity split across 2–8 stocks: inverse-volatility base + correlation penalty (>0.7 trimmed) + optional 0.25× fractional-Kelly conviction tilt + max-position cap. Outputs weight %, ₹ allocation and share qty; Chart.js donut; exports the sized basket into the Portfolio scoring module |
 
+## Keeping the deployed site fresh
+Yahoo- and Google-sourced features (prices, heatmap, indices, Stock Info, peers, earnings,
+News) self-update on the live site with no help — those hosts don't block cloud IPs.
+
+**NSE-sourced features cannot.** NSE blocks the deployed host's IP outright, so the live site
+can never fetch bhavcopy, FII/DII, bulk/block deals or the results calendar itself. Git is the
+transport instead: run this on the **local machine** (Indian residential IP, which NSE allows):
+
+```bash
+npm run refresh-data          # warm NSE caches, prune the bhav window, stage the snapshots
+npm run refresh-data:push     # ...and commit + push, so the live site picks it up on redeploy
+```
+
+It boots a throwaway server on port 5199 (your normal one on 5173 is untouched), warms only
+the four NSE feeds, keeps the newest 30 bhavcopy days, and stages `.cache/` — never `git add -A`.
+Run it after the close on any day you want the live site current; if you skip a week, the live
+site keeps serving the last snapshot you pushed rather than showing an error.
+
+Committed snapshots are public market data only — no credentials. Don't pre-gzip them: git
+already zlib-packs each bhavcopy to ~64 KB and manual gzip would defeat delta compression.
+
 ## Refresh behaviour
 - **News** updates automatically (every 90s, only while you're on the News tab).
 - **Heatmap is manual on purpose** — it loads once when you first open the Trend tab, then only re-fetches when you click **↻ Refresh Live Data** or change a Time Frame / Universe pill. Switching tabs does not re-pull it.
@@ -84,7 +105,10 @@ is "Renewables (% energy)".
 **Geopolitical Risk** lives in `geopoliticalRisk.json` — a hand-maintained config (not a live
 feed), so you edit chokepoint statuses, conflict zones, sanctions and India market-impact
 notes yourself and refresh. Each entry has id/name/lat/lng/type/status/flowPercentage/
-lastUpdated/note/marketImpact.
+lastUpdated/note/marketImpact. Bump the top-level `updated` field (`YYYY-MM`) whenever you
+review it: the risk ticker reads that and stamps itself "as of <month>", turning amber with a
+"⚠ N months old" warning once it falls behind — so a stale "Hormuz: Elevated" can't read as
+breaking news. Same for `macroCurated.json`'s `updated` field on the Macro tab.
 
 ## Tickers
 The universe uses NSE symbols (`.NS`). Occasionally Yahoo drops one (shown as "no data: …");
