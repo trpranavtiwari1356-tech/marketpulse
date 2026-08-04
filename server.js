@@ -14,6 +14,23 @@ const PORT = +process.env.PORT || 5173;   // override with PORT=xxxx to run a se
 const CLOUD_HOST = process.env.RENDER === 'true' || process.env.LIGHT_START === '1';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
+// ─────────── Cloudflare Web Analytics (cookieless page-view counting) ───────────
+// The beacon is injected server-side rather than hardcoded into stock-market.html for two
+// reasons: the site token stays out of git, and local/dev runs stay un-tracked (no token in
+// the env → nothing is injected → the page is byte-identical to the file on disk). Set
+// CF_BEACON_TOKEN in the host's environment to switch it on. The token is a public value
+// (it ships to every browser), so this is about keeping dev traffic out of the stats, not
+// about secrecy. Hex-only guard: the token is interpolated into a JSON attribute, so a
+// malformed env value must not be able to break out of it.
+const CF_BEACON_TOKEN = /^[a-f0-9]{16,64}$/i.test(process.env.CF_BEACON_TOKEN || '')
+  ? process.env.CF_BEACON_TOKEN : '';
+function withAnalytics(html) {
+  const tag = `<script defer src="https://static.cloudflareinsights.com/beacon.min.js" `
+    + `data-cf-beacon='{"token":"${CF_BEACON_TOKEN}"}'></script>\n`;
+  // Injected last so a beacon outage can never delay the app's own scripts.
+  return html.includes('</body>') ? html.replace('</body>', tag + '</body>') : html + tag;
+}
+
 // ─────────── hard-timeout fetch for EVERY upstream call (audit 10-Jul-2026) ───────────
 // A black-holed host (SNI-filtered ISP, blocked cloud IP) completes the TCP handshake but
 // never answers — a plain fetch() then hangs FOREVER, wedging a pool slot so a 500-stock
@@ -294,26 +311,27 @@ function computeMas(closes, price, cfg) {
 // history → fake low + phantom move). So keep only the splits the raw close actually
 // reflects as a ~split-ratio discontinuity across the ex-date. TRENT (genuinely unadjusted
 // raw) still gets adjusted; HDFCBANK's phantom split is skipped. No-split stocks: unchanged.
-function effectiveSplits(res) {
-  const splits = (res.events && res.events.splits) ? Object.values(res.events.splits) : [];
-  if (!splits.length) return [];
-  const ts = res.timestamp || [];
-  const close = (res.indicators && res.indicators.quote[0] && res.indicators.quote[0].close) || [];
-  return splits.filter(sp => {
-    if (!sp.numerator || !sp.denominator) return false;
-    const ratio = sp.numerator / sp.denominator;             // 2:1 → 2, 3:2 → 1.5
-    if (ratio <= 1.001) return true;                          // reverse/odd split → trust the feed
-    let bi = -1;                                              // last bar strictly before the ex-date
-    for (let i = 0; i < ts.length; i++) { if (ts[i] < sp.date) bi = i; else break; }
-    const before = close[bi], after = close[bi + 1];
-    if (bi < 0 || before == null || after == null || !after) return true;   // can't verify → trust feed
-    const rawJump = before / after;                           // unadjusted ≈ ratio; already-adjusted ≈ 1
-    return Math.abs(rawJump - ratio) / ratio < 0.25;          // raw shows the drop → we must adjust
-  });
+// Yahoo's chart OHLC (indicators.quote[0]) is ALREADY split-adjusted — verified 28-Jul-2026
+// across 23 splits on 9 NSE tickers (RELIANCE, INFY, ITC, TITAN, TVSMOTOR, LAURUSLABS, IRCTC,
+// BAJFINANCE) on both 1d and 1mo bars. Test used: adjclose/close is a pure *dividend* factor,
+// so if `close` were raw that ratio would jump by the split ratio at each ex-date. It never
+// does — e.g. RELIANCE's factor is 0.6799 on BOTH sides of the 1997-10-27 2:1. 23/23 adjusted,
+// 0 raw. See tests/fixtures/split-adjustment.json.
+//
+// This function used to sniff each split and re-apply it when a price drop "looked like" the
+// ratio. Because the feed is already adjusted, that check could only ever produce FALSE
+// POSITIVES: a genuine large move landing on a split date got mistaken for the split itself.
+// RELIANCE tripped exactly that — Sep-1997 25.885 → Oct-1997 11.329 is a real 56% crash in the
+// adjusted series, but rawJump 2.285 sat within 25% of the 2:1 ratio, so every pre-1997 bar was
+// silently halved and the all-time low was reported at ₹2.71 instead of ₹5.43.
+//
+// Kept as a named no-op (rather than deleted) so the call sites still read as a deliberate
+// "no adjustment is required here" and a future provider swap has one obvious place to change.
+function effectiveSplits(_res) {
+  return [];
 }
-// Split-adjusted price series for any OHLC field (so values survive stock splits and
-// match charting platforms, which are split-adjusted). Each historical bar is scaled by
-// the product of (denominator/numerator) for every split that happened AFTER that bar.
+// Price series for any OHLC field, with the provider's split adjustment left as-is (see
+// effectiveSplits above). Values are therefore split-adjusted and match charting platforms.
 function adjustedSeries(res, field) {
   const q = (res.indicators && res.indicators.quote[0]) || {};
   const raw = q[field] || [];
@@ -357,6 +375,27 @@ function refCloses(res) {
     out.push(v * f);
   }
   return out;
+}
+
+// Previous *session* close for a quote/index card, in strict order of trustworthiness:
+//
+//   1. refCloses — the last completed session in the returned series, anchored by DATE. This is
+//      the only source that is right when Yahoo's EOD bar lags (see refCloses above).
+//   2. meta.chartPreviousClose — ONLY when the series contains no completed session at all.
+//      Yahoo defines it as the close preceding the window, so when the window holds just the
+//      live bar it IS yesterday's close. It is NOT used otherwise, because on a multi-day
+//      window it means "close before the range start", which is several sessions stale.
+//
+// Without step 2 a thin series left prevClose undefined and the card rendered a flat 0.00%.
+// Caught live 28-Jul-2026: NIFTY AUTO (^CNXAUTO) returned a single bar for range=5d, so the
+// card showed 27843.90 / +0.00% when the real move was +190.50 (+0.69%) off a 27653.40 close.
+// A fabricated "unchanged" is worse than a gap: the user reads it as a real flat session.
+function prevSessionClose(res) {
+  const refArr = refCloses(res);
+  if (refArr.length) return { value: refArr[refArr.length - 1], basis: 'series' };
+  const cp = res.meta && res.meta.chartPreviousClose;
+  if (cp > 0) return { value: cp, basis: 'chartPreviousClose' };
+  return { value: null, basis: 'unavailable' };
 }
 
 // Period return is measured over a trading-day lookback on the DAILY series
@@ -519,12 +558,17 @@ async function topMovers(uni, period) {
 
 // ─────────── all-time highs / lows (full split-adjusted history) ───────────
 async function extremeSnap(stock) {
-  const res = await yahooChart(stock.yh, '1wk', 'max');   // weekly bars over the whole history
+  // '1mo', not '1wk': Yahoo silently DOWNGRADES 1wk+max to monthly bars anyway
+  // (meta.dataGranularity === '1mo' — verified 28-Jul-2026 on TITAN.NS, every bar a month-end).
+  // Asking for what we actually get keeps the code honest and the `years` maths right.
+  // A monthly bar's high/low still captures the intra-month extreme, so the ATH/ATL is exact;
+  // only the DATE of the extreme is month-resolution.
+  const res = await yahooChart(stock.yh, '1mo', 'max');
   if (!res) return { ...stock, error: true };
   // True all-time high/low = highest intraday HIGH / lowest intraday LOW ever traded
-  // (what TradingView shows) — NOT the highest/lowest weekly close, which understates the
-  // ATH and overstates the ATL by ~1-3%. A weekly bar's high/low already captures the
-  // intra-week extreme, so weekly granularity is fine.
+  // (what TradingView shows) — NOT the highest/lowest close, which understates the ATH and
+  // overstates the ATL by ~1-3%.
+  const ts     = res.timestamp || [];
   const highs  = adjustedSeries(res, 'high').filter(v => v > 0 && isFinite(v));
   const lows   = adjustedSeries(res, 'low').filter(v => v > 0 && isFinite(v));
   const closes = adjustedCloses(res).filter(v => v != null && isFinite(v));
@@ -536,11 +580,31 @@ async function extremeSnap(stock) {
   const dayLow  = (meta.regularMarketDayLow  > 0) ? meta.regularMarketDayLow  : Infinity;
   const ath = Math.max(price, dayHigh, ...highs);
   const atl = Math.min(price, dayLow,  ...lows);
+  // Bar index of each extreme, so the UI can say WHEN it happened. Without a date, an
+  // "all-time low" like TITAN's split-adjusted ₹1.35 (Aug-2001) reads as a live quote.
+  const rawHi = ((res.indicators && res.indicators.quote[0]) || {}).high || [];
+  const rawLo = ((res.indicators && res.indicators.quote[0]) || {}).low  || [];
+  const dateAt = (arr, target) => {
+    let best = null, diff = Infinity;
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i] == null || !isFinite(arr[i])) continue;
+      const d = Math.abs(arr[i] - target);
+      if (d < diff) { diff = d; best = ts[i]; }
+    }
+    return (best && diff / (target || 1) < 0.01) ? new Date(best * 1000).toISOString().slice(0, 10) : null;
+  };
+  // History actually covered, measured from the TIMESTAMPS. The old `closes.length / 52`
+  // assumed weekly bars on a monthly series and under-reported by ~4.3× (TITAN: "7.1 years"
+  // for 30.6 years of history).
+  const spanYears = (ts.length >= 2) ? (ts[ts.length - 1] - ts[0]) / (365.25 * 86400) : 0;
   return { sym: stock.sym, name: stock.name, sector: stock.sector, price: +price.toFixed(2),
     ath: +ath.toFixed(2), atl: +atl.toFixed(2),
+    athDate: dateAt(rawHi, ath), atlDate: dateAt(rawLo, atl),
     fromHigh: +(((price - ath) / ath) * 100).toFixed(2),
     fromLow: +(((price - atl) / atl) * 100).toFixed(2),
-    years: +(closes.length / 52).toFixed(1) };
+    years: +spanYears.toFixed(1),
+    historyFrom: ts.length ? new Date(ts[0] * 1000).toISOString().slice(0, 10) : null,
+    granularity: (res.meta && res.meta.dataGranularity) || '1mo' };
 }
 const EXTREMES_TTL = 60 * 60e3;   // ATH/ATL move slowly
 const _extremes = cacheLoad('extremes').map || {};   // uni -> { at, data }
@@ -561,7 +625,11 @@ async function refreshExtremes(uni) {
   _extremesInflight[uni] = job;
   return job;
 }
-async function topExtremes(uni) {
+async function topExtremes(uni, force) {
+  // `force` (?fresh=1) mirrors /api/trend's Refresh button. Without it the only way to get a
+  // rebuilt scan was to wait out the 60-minute TTL, which also meant a schema change to
+  // extremeSnap stayed invisible for an hour behind a cache written by the previous build.
+  if (force) return refreshExtremes(uni);
   const entry = _extremes[uni];
   if (entry) {
     if (Date.now() - entry.at > EXTREMES_TTL) refreshExtremes(uni).catch(() => {});   // revalidate in bg
@@ -897,11 +965,16 @@ async function indexSnap(name, ticker) {
   const closes = ((res.indicators.quote[0] || {}).close || []).filter(v => v != null && !isNaN(v));
   const price = meta.regularMarketPrice != null ? meta.regularMarketPrice : closes[closes.length - 1];
   // previous *session* close, date-anchored (index-based [len-2] shifts a day when Yahoo lags)
-  const refArr = refCloses(res);
-  const prevClose = refArr[refArr.length - 1] || closes[closes.length - 2];
-  const chg = (price != null && prevClose) ? price - prevClose : 0;
-  const pct = prevClose ? (chg / prevClose) * 100 : 0;
-  return { name, value: price, change: +chg.toFixed(2), pct: +pct.toFixed(2) };
+  const prev = prevSessionClose(res);
+  const prevClose = prev.value;
+  // No reference close => report the change as unknown (null), never as 0.00%. ^CNXAUTO has
+  // gone fully null-valued for a week at a time; a fabricated flat print hides that outage.
+  const known = price != null && prevClose > 0;
+  const chg = known ? price - prevClose : null;
+  const pct = known ? (chg / prevClose) * 100 : null;
+  return { name, value: price, change: known ? +chg.toFixed(2) : null, pct: known ? +pct.toFixed(2) : null,
+    prevClose: prevClose > 0 ? +prevClose.toFixed(2) : null, prevCloseBasis: prev.basis,
+    sourceAsOf: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null };
 }
 
 // ─────────── GOLD = MCX-style ₹/10g, built from COMEX (GC=F) × live USD/INR ───────────
@@ -927,16 +1000,20 @@ async function mcxGoldSnap() {
   const goldNow = goldMeta.regularMarketPrice != null ? goldMeta.regularMarketPrice : goldCloses[goldCloses.length - 1];
   // date-anchored previous session close (refCloses), same as every equity/index quote —
   // the raw [len-2] index shifts a whole session whenever Yahoo's EOD bar lags (audit 10-Jul-2026)
-  const goldRef = refCloses(goldRes), fxRef = refCloses(fxRes);
-  const goldPrev = goldRef[goldRef.length - 1] || goldCloses[goldCloses.length - 2];
+  const goldPrev = prevSessionClose(goldRes).value;
   const fxNow = fxMeta.regularMarketPrice != null ? fxMeta.regularMarketPrice : fxCloses[fxCloses.length - 1];
-  const fxPrev = fxRef[fxRef.length - 1] || fxCloses[fxCloses.length - 2];
+  const fxPrev = prevSessionClose(fxRes).value;
   const per10g = (usdPerOz, inrPerUsd) => (usdPerOz / TROY_OZ_TO_GRAM) * 10 * inrPerUsd * GOLD_MCX_PREMIUM;
   const valueNow = per10g(goldNow, fxNow);
-  const valuePrev = (goldPrev && fxPrev) ? per10g(goldPrev, fxPrev) : null;
-  const chg = valuePrev ? valueNow - valuePrev : 0;
-  const pct = valuePrev ? (chg / valuePrev) * 100 : 0;
-  return { name: 'GOLD', value: +valueNow.toFixed(2), change: +chg.toFixed(2), pct: +pct.toFixed(2) };
+  const valuePrev = (goldPrev > 0 && fxPrev > 0) ? per10g(goldPrev, fxPrev) : null;
+  const chg = valuePrev ? valueNow - valuePrev : null;
+  const pct = valuePrev ? (chg / valuePrev) * 100 : null;
+  // Explicitly an INDICATIVE landed price derived from COMEX × USD/INR × a static premium —
+  // never an MCX tick. The UI must not label this "live MCX" (see GOLD_MCX_PREMIUM above).
+  return { name: 'GOLD', value: +valueNow.toFixed(2),
+    change: chg != null ? +chg.toFixed(2) : null, pct: pct != null ? +pct.toFixed(2) : null,
+    derived: true, basis: 'COMEX GC=F × USD/INR × ' + GOLD_MCX_PREMIUM + ' duty/basis premium',
+    sourceAsOf: goldMeta.regularMarketTime ? new Date(goldMeta.regularMarketTime * 1000).toISOString() : null };
 }
 // Synthetic ₹/10g gold candles for the chart — the same landed-cost math as mcxGoldSnap,
 // applied bar-by-bar to COMEX GC=F using the day-aligned USD/INR (INR=X) series.
@@ -966,15 +1043,17 @@ async function quote(ticker) {
   const closes = adjustedCloses(res);   // split-adjusted (for SMA correctness)
   const price = meta.regularMarketPrice != null ? meta.regularMarketPrice : closes[closes.length - 1];
   // previous *session* close, date-anchored (not closes[len-2], which shifts a day when
-  // Yahoo's EOD bar lags; not chartPreviousClose, which is range-start)
-  const refArr = refCloses(res);
-  const prevClose = refArr[refArr.length - 1] || closes[closes.length - 2];
-  const chg = (price != null && prevClose) ? price - prevClose : 0;
-  const pct = prevClose ? (chg / prevClose) * 100 : 0;
+  // Yahoo's EOD bar lags; chartPreviousClose only as the no-completed-session fallback)
+  const prev = prevSessionClose(res);
+  const prevClose = prev.value;
+  const known = price != null && prevClose > 0;
+  const chg = known ? price - prevClose : null;
+  const pct = known ? (chg / prevClose) * 100 : null;
   return {
     symbol: meta.symbol, currency: meta.currency,
     price: price != null ? +price.toFixed(2) : null,
-    change: +chg.toFixed(2), pct: +pct.toFixed(2),
+    change: known ? +chg.toFixed(2) : null, pct: known ? +pct.toFixed(2) : null,
+    prevClose: prevClose > 0 ? +prevClose.toFixed(2) : null,
     dayHigh: meta.regularMarketDayHigh, dayLow: meta.regularMarketDayLow,
     week52High: meta.fiftyTwoWeekHigh, week52Low: meta.fiftyTwoWeekLow,
     volume: meta.regularMarketVolume,
@@ -2156,14 +2235,31 @@ async function loadBhavDay(d) {
       { headers: { 'User-Agent': UA, 'Accept': 'text/csv,*/*', 'Referer': 'https://www.nseindia.com/' } });
     if (r.ok) {
       const rows = {};
+      // The CSV carries its own trading date in DATE1 (column 2). It MUST be checked: NSE
+      // sometimes answers 200 with the PREVIOUS day's file for a date it has not published
+      // yet, and the URL alone is then a lie. Caught 28-Jul-2026 — bhav_26062026.json was a
+      // byte-identical copy of the 25-Jun file (same closes, same DELIV_QTY, same PREV_CLOSE),
+      // so 25-Jun was counted twice in every delivery baseline and the per-stock delivery
+      // chart drew a phantom flat session. Reject any file whose DATE1 isn't the day we asked
+      // for, and treat it as "not published yet" (retry later), never as a holiday.
+      const wantMs = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+      let fileMs = 0, mismatched = 0;
       for (const line of (await r.text()).split(/\r?\n/).slice(1)) {
         const p = line.split(',').map(x => x.trim());
         if (p.length < 15 || p[1] !== 'EQ') continue;   // EQ series only (skip BE/SM/…)
+        const rowMs = nseDateMs(p[2]);
+        if (rowMs) { if (!fileMs) fileMs = rowMs; else if (rowMs !== fileMs) mismatched++; }
         rows[p[0]] = { c: +p[8], pc: +p[3], v: +p[10], tr: +p[12], dq: +p[13] || 0, dp: p[14] === '-' ? null : +p[14] };
       }
-      if (Object.keys(rows).length > 200)
+      const dateOk = fileMs === wantMs && mismatched === 0;
+      if (!dateOk && Object.keys(rows).length) {
+        console.warn(`[bhav] ${key}: archive served ${fileMs ? new Date(fileMs).toISOString().slice(0, 10) : 'no DATE1'}`
+          + `${mismatched ? ` (+${mismatched} mixed-date rows)` : ''} — rejected, will retry`);
+      } else if (Object.keys(rows).length > 200) {
         out = { rows, iso: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` };
-      else definitiveMiss = true;         // 200 but not a real bhavcopy (NSE serves a stub on non-trading days)
+      } else {
+        definitiveMiss = true;            // 200 but not a real bhavcopy (NSE serves a stub on non-trading days)
+      }
     } else if (r.status === 404) {
       definitiveMiss = true;              // archive genuinely has no file → market was shut
     }
@@ -2192,7 +2288,32 @@ async function ensureBhavDays(n) {
     if (day.getDay() !== 0 && day.getDay() !== 6) cands.push(day);
   }
   const loaded = await pool(cands, 4, day => loadBhavDay(day));
-  return loaded.filter(x => x && x.rows).sort((a, b) => a.iso < b.iso ? -1 : 1).slice(-want);
+  const days = loaded.filter(x => x && x.rows).sort((a, b) => a.iso < b.iso ? -1 : 1);
+  // Self-healing duplicate guard. The DATE1 check in loadBhavDay stops NEW stale files landing,
+  // but caches written before that check exist on disk and carry no DATE1 to re-verify. Two
+  // sessions can never share an identical row-set — that would mean ~2400 stocks each closed at
+  // the same price on the same volume with the same trade count — so an exact match is proof of
+  // a duplicated file. Drop the later copy and delete it so the next sweep refetches it properly.
+  const deduped = [];
+  const seen = new Map();                                    // fingerprint -> iso that owns it
+  for (const day of days) {
+    const syms = Object.keys(day.rows);
+    const probe = syms.length + '|' + syms.slice(0, 40).map(s => {
+      const r = day.rows[s]; return `${s}:${r.c}:${r.v}:${r.tr}:${r.dq}`;
+    }).join(',');
+    const owner = seen.get(probe);
+    if (owner) {
+      console.warn(`[bhav] ${day.iso} is a duplicate of ${owner} — dropping and purging its cache`);
+      const [y, m, dd] = day.iso.split('-');
+      const k = dd + m + y;
+      delete _bhav[k];
+      try { fs.unlinkSync(path.join(CACHE_DIR, `bhav_${k}.json`)); } catch (e) { /* already gone */ }
+      continue;
+    }
+    seen.set(probe, day.iso);
+    deduped.push(day);
+  }
+  return deduped.slice(-want);
 }
 // per-stock delivery & volume conviction read
 async function deliveryAnalytics(sym) {
@@ -2632,9 +2753,19 @@ async function earningsReport(sym) {
     const r5 = (base >= 0 && closes[base + 5] != null) ? +((closes[base + 5] / closes[base] - 1) * 100).toFixed(2) : null;
     rows.push({ date: new Date(ev.ms).toISOString().slice(0, 10), ms: ev.ms,
       epsEst: ev.epsEst, epsAct: ev.epsAct, surprise: ev.surprise != null ? +(+ev.surprise).toFixed(2) : null,
-      react1d: r1, react5d: r5, exact: true });
+      react1d: r1, react5d: r5, exact: true, dateKind: 'announced' });
   }
-  // recent quarters the visualization feed hasn't caught up on → EPS surprise only, no reaction
+  // Recent quarters the visualization feed hasn't caught up on → EPS surprise only, no reaction.
+  //
+  // These dates are the quarter END (2026-06-30), NOT the day results were announced (Infosys
+  // reported Q1 FY27 in mid-July). They were previously emitted in the same shape as announced
+  // rows with only a quiet `periodEnd` flag, so the newest four entries in the table — the ones
+  // a user reads first — showed a fiscal period end under a "Report date" heading. `dateKind`
+  // now states which is which, and the UI labels the period-end rows explicitly.
+  //
+  // Cause is upstream: Yahoo's earnings-visualization feed has published no NSE announcement
+  // dates since 2025-04-17 (verified 28-Jul-2026 for INFY.NS and RELIANCE.NS), so every quarter
+  // after that falls back to this path. See the provider-replacement table in the audit report.
   const eh = qs && qs.earningsHistory && qs.earningsHistory.history;
   if (eh) {
     const newest = rows.length ? Math.max(...rows.map(r => r.ms)) : 0;
@@ -2644,7 +2775,7 @@ async function earningsReport(sym) {
       rows.push({ date: h.quarter.fmt, ms: qms,
         epsEst: h.epsEstimate && h.epsEstimate.raw, epsAct: h.epsActual && h.epsActual.raw,
         surprise: h.surprisePercent && h.surprisePercent.raw != null ? +(h.surprisePercent.raw * 100).toFixed(2) : null,
-        react1d: null, react5d: null, exact: false, periodEnd: true });
+        react1d: null, react5d: null, exact: false, periodEnd: true, dateKind: 'periodEnd' });
     }
   }
   rows.sort((a, b) => b.ms - a.ms);
@@ -2654,13 +2785,27 @@ async function earningsReport(sym) {
     const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
     const beats = reacted.filter(r => r.surprise != null && r.surprise > 0);
     const misses = reacted.filter(r => r.surprise != null && r.surprise < 0);
+    const ms = reacted.map(r => r.ms);
     stats = { events: reacted.length,
       avgAbs1d: +avg(reacted.map(r => Math.abs(r.react1d))).toFixed(2),
       avgBeat1d: beats.length ? +avg(beats.map(r => r.react1d)).toFixed(2) : null, beats: beats.length,
       avgMiss1d: misses.length ? +avg(misses.map(r => r.react1d)).toFixed(2) : null, misses: misses.length,
-      avgDrift5d: +avg(reacted.filter(r => r.react5d != null).map(r => r.react5d)).toFixed(2) };
+      avgDrift5d: +avg(reacted.filter(r => r.react5d != null).map(r => r.react5d)).toFixed(2),
+      // Which reports these averages actually cover. Reactions only exist for rows with a real
+      // announcement timestamp, and that feed stops at Apr-2025 — so "avg move on results" can
+      // be built entirely from year-old events. The UI states the window instead of implying now.
+      coverageFrom: new Date(Math.min(...ms)).toISOString().slice(0, 10),
+      coverageTo:   new Date(Math.max(...ms)).toISOString().slice(0, 10),
+      staleMonths: Math.round((Date.now() - Math.max(...ms)) / (30.44 * 86400e3)) };
   }
-  const data = { sym, name: st.name, next, rows: rows.slice(0, 12), stats, asOf: new Date().toISOString() };
+  const quartersWithoutDate = rows.filter(r => r.dateKind === 'periodEnd').length;
+  const data = { sym, name: st.name, next, rows: rows.slice(0, 12), stats,
+    // truthful coverage statement for the panel header
+    dateCoverage: { announced: rows.length - quartersWithoutDate, periodEndOnly: quartersWithoutDate,
+      note: quartersWithoutDate
+        ? 'Recent quarters show the fiscal period end — the provider publishes no announcement date for them, so no price reaction can be measured.'
+        : null },
+    asOf: new Date().toISOString() };
   _earnCache.set(sym, { at: Date.now(), data });
   capCache(_earnCache, 150);
   return data;
@@ -3628,6 +3773,54 @@ function macroCurated(ind) {
     years: [year], latestYear: year, countries, asOf: new Date().toISOString() };
 }
 
+// ─────────── response freshness metadata (audit 28-Jul-2026) ───────────
+// NSE trades 09:15–15:30 IST, Mon–Fri. Outside that window every equity figure in the product
+// is a CLOSING snapshot, not a live tick, and the response has to say so — a client that shows
+// "LIVE" over a Sunday price is stating something false about the market, not just the cache.
+// Holidays are deliberately NOT hard-coded here: a stale holiday list silently mislabels real
+// trading days (which is exactly what an earlier fix had to undo), so a holiday reads as
+// 'closed' via the weekday/hours test on the day itself and the source timestamp carries the truth.
+const NSE_OPEN_MIN = 9 * 60 + 15, NSE_CLOSE_MIN = 15 * 60 + 30;
+function marketStatusIST(at = Date.now()) {
+  const ist = new Date(at + (5.5 * 3600e3) + (new Date(at).getTimezoneOffset() * 60e3));
+  const day = ist.getDay(), mins = ist.getHours() * 60 + ist.getMinutes();
+  const open = day >= 1 && day <= 5 && mins >= NSE_OPEN_MIN && mins <= NSE_CLOSE_MIN;
+  return open ? 'open' : 'closed';
+}
+
+// Attach the standard `meta` block WITHOUT disturbing the existing top-level fields — the
+// frontend reads those directly and a wholesale { data, meta } reshape would blank every panel
+// at once. New clients read `meta`; old code keeps working unchanged.
+//
+//   source        who published the underlying figures
+//   sourceAsOf    when the SOURCE says the data is from (a close time, a filing, a WEO vintage)
+//   fetchedAt     when we last successfully pulled it
+//   cacheState    fresh | cached | stale | curated | unavailable
+//   marketStatus  open | closed  — governs whether "live" is even possible right now
+//   coverage      what the payload actually spans, in the reader's terms
+function withMeta(payload, meta) {
+  const now = Date.now();
+  const fetchedAt = meta.fetchedAt || (payload && payload.asOf) || new Date(now).toISOString();
+  const ageMs = now - Date.parse(fetchedAt);
+  const cacheState = meta.cacheState
+    || (!isFinite(ageMs) ? 'unavailable'
+      : (meta.ttlMs && ageMs > meta.ttlMs * 4) ? 'stale'
+      : (meta.ttlMs && ageMs > meta.ttlMs) ? 'cached' : 'fresh');
+  return {
+    ...payload,
+    meta: {
+      source: meta.source || null,
+      sourceAsOf: meta.sourceAsOf || null,
+      fetchedAt,
+      cacheState,
+      marketStatus: meta.marketStatus || marketStatusIST(now),
+      refreshStatus: meta.refreshStatus || 'ok',
+      coverage: meta.coverage || null,
+      ...(meta.extra || {}),
+    },
+  };
+}
+
 // ─────────── HTTP routing ───────────
 function send(res, code, body, type) {
   res.writeHead(code, { 'Content-Type': type || 'application/json', 'Cache-Control': 'no-store' });
@@ -3647,9 +3840,118 @@ function apiError(code, message, opts = {}) {
   if (opts.source) e.source = opts.source;
   if (opts.lastSuccessAt) e.lastSuccessAt = opts.lastSuccessAt;
   if (opts.detail) e.detail = opts.detail;
+  if (opts.requestId) e.requestId = opts.requestId;
   // `error` is kept as a plain string alongside the structured object: older frontend code
   // branches on `j.error` being truthy, and breaking that would blank working panels.
   return { error: message, errorDetail: e };
+}
+
+// Map a thrown exception onto the standard envelope. Handlers used to answer with
+// `String(e.message)`, which is exactly how "Trendlyne HTTP 403" and "DBnomics timed out after
+// 30s" ended up being read by users. The raw upstream text now goes to the server log only; the
+// browser gets a stable code and a sentence written for a person. `extra` carries the empty
+// collection some panels expect (`items: []`, `officers: []`) so they render a tidy empty state.
+function upstreamFail(res, route, e, opts = {}) {
+  const raw = String((e && e.message) || e || 'unknown');
+  const timeout  = /timed? ?out|ETIMEDOUT|abort/i.test(raw);
+  const blocked  = /\b40[13]\b|forbidden|unauthoriz/i.test(raw);
+  const noData   = /\b404\b|not found|no data/i.test(raw);
+  const code = timeout ? 'UPSTREAM_TIMEOUT' : blocked ? 'UPSTREAM_BLOCKED'
+             : noData ? 'UPSTREAM_NO_DATA'  : 'UPSTREAM_UNAVAILABLE';
+  const message = opts.message || (
+      timeout ? 'The data provider is responding slowly - please try again in a moment.'
+    : noData  ? 'No data is published for this request.'
+    :           'This data is temporarily unavailable.');
+  console.error(`[api] ${route} ${code} rid=${res._rid}: ${raw}`);
+  const body = apiError(code, message, { retryable: !noData, source: opts.source, requestId: res._rid });
+  return send(res, noData ? 404 : 502, JSON.stringify({ ...body, ...(opts.extra || {}) }));
+}
+
+// ─────────── Parameter allowlists (audit 28-Jul-2026) ───────────
+// Every enumerable parameter is validated against a fixed set server-side rather than being
+// passed through to an upstream URL. Unknown values used to fall back to a default silently,
+// which hid frontend/backend drift (e.g. "NIFTY 50" vs "Nifty 50") until someone read a chart
+// that was quietly showing the wrong universe.
+const UNIVERSES    = ['Nifty 50', 'Nifty 100', 'Nifty 200', 'Nifty 500', 'Nifty IT', 'Bank Nifty', 'All Market'];
+const MOVER_PERIODS = Object.keys(MOVER_LOOKBACK);   // daily | weekly | monthly
+const RS_PERIODS    = Object.keys(RS_LOOKBACK);      // 1W | 1M | 3M
+const TIMEFRAMES    = Object.keys(TF_MAP);
+const SYM_RE = /^[A-Z0-9][A-Z0-9&.\-]{0,19}$/;       // NSE symbols: MARUTI, M&M, BAJAJ-AUTO...
+
+function badParam(res, name, allowed) {
+  return send(res, 400, JSON.stringify(apiError('INVALID_PARAM',
+    `"${name}" is not a supported value.`,
+    { retryable: false, requestId: res._rid, detail: allowed ? { parameter: name, allowed } : { parameter: name } })));
+}
+// Returns the validated value, or null after having already sent a 400.
+function pickOne(res, u, key, allowed, dflt) {
+  const v = u.searchParams.get(key);
+  if (v == null || v === '') return dflt;
+  if (!allowed.includes(v)) { badParam(res, key, allowed); return null; }
+  return v;
+}
+// Symbol-only routes (quote, ratios, swot, peers...) take an NSE ticker, never free text.
+function pickSym(res, u, key = 'sym') {
+  const raw = (u.searchParams.get(key) || '').toUpperCase().trim().replace(/\.NS$/, '');
+  if (!raw) { badParam(res, key); return null; }
+  if (!SYM_RE.test(raw)) { badParam(res, key); return null; }
+  return raw;
+}
+
+// Read a JSON request body, hard-capped so an expensive endpoint can't be fed a huge payload.
+function readJsonBody(req, maxBytes = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    let n = 0, over = false; const chunks = [];
+    const fail = (msg, status) => { const e = new Error(msg); e.status = status; over = true; reject(e); };
+    req.on('data', c => {
+      if (over) return;                 // keep draining so the response can still be written back
+      n += c.length;
+      if (n > maxBytes) return fail(`Request body exceeds the ${Math.round(maxBytes / 1024)} KB limit.`, 413);
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (over) return;
+      if (!chunks.length) return resolve({});
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch { fail('Request body is not valid JSON.', 400); }
+    });
+    req.on('error', e => { if (!over) { over = true; reject(e); } });
+  });
+}
+
+// Holdings arrive either as the legacy "SYM:QTY:BUY,..." query string or as a JSON array of
+// { sym, qty, buy } from a POST body. Both land here so the bounds are enforced once.
+const MAX_HOLDINGS = 60;
+function parseHoldings(src) {
+  const list = Array.isArray(src)
+    ? src
+    : String(src || '').split(',').map(s => {
+        const [sym, qty, buy] = s.split(':');
+        return { sym, qty, buy };
+      });
+  return list.map(h => {
+    const sym = String(h && h.sym || '').trim().toUpperCase().replace(/\.NS$/, '');
+    const qty = +(h && h.qty);
+    const buy = (h && h.buy != null && h.buy !== '' && isFinite(+h.buy)) ? +h.buy : null;
+    return { sym, qty, buy };
+  }).filter(x => SYM_RE.test(x.sym) && isFinite(x.qty) && x.qty > 0 && x.qty <= 1e9
+                 && (x.buy === null || (x.buy > 0 && x.buy <= 1e7)))
+    .slice(0, MAX_HOLDINGS);
+}
+
+// Public reads whose content only changes on an ingest (symbol directory, earnings calendar).
+// `no-store` on these meant every tab reload re-downloaded a six-figure payload; with an ETag
+// the browser revalidates and usually gets an empty 304 back.
+function sendCacheable(req, res, body, maxAgeSec) {
+  const etag = '"' + require('crypto').createHash('sha1').update(body).digest('base64').slice(0, 22) + '"';
+  const headers = {
+    'Content-Type': 'application/json',
+    'Cache-Control': `public, max-age=${maxAgeSec}, stale-while-revalidate=86400`,
+    'ETag': etag,
+  };
+  if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end(); }
+  res.writeHead(200, headers);
+  res.end(body);
 }
 
 // Per-IP rate limit for the EXPENSIVE endpoints only (audit 10-Jul-2026): /api/portfolio fans
@@ -3673,72 +3975,154 @@ function rateLimited(req) {
 
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://localhost:${PORT}`);
+  res._rid = Math.random().toString(36).slice(2, 10);   // correlates a user report with the log line
 
   try {
+    // Process liveness. Deliberately touches nothing external — an upstream outage must not make
+    // the host think the process is dead and restart it (which is what killed us on Render before).
+    if (u.pathname === '/health') {
+      return send(res, 200, JSON.stringify({ status: 'ok', uptimeSec: Math.round(process.uptime()), servedAt: new Date().toISOString() }));
+    }
+
+    // Dependency status: provider circuit breakers, cache ages, last successful ingest. Set
+    // HEALTH_TOKEN in the environment to require ?token= on a public deployment; with no token
+    // configured it stays open, since it exposes only freshness metadata and no secrets.
+    if (u.pathname === '/health/dependencies') {
+      const tok = process.env.HEALTH_TOKEN;
+      if (tok && u.searchParams.get('token') !== tok)
+        return send(res, 401, JSON.stringify(apiError('UNAUTHORIZED', 'A token is required.', { retryable: false, requestId: res._rid })));
+      const now = Date.now();
+      const ageMin = at => (at ? Math.round((now - at) / 60000) : null);
+      const macro = {};
+      for (const ind of Object.keys(WB_INDICATORS)) {
+        const br = macroBreaker(ind), hit = macroCached(ind);
+        macro[ind] = {
+          cacheAgeMin: ageMin(hit && hit.at),
+          state: !hit ? 'empty' : (now - hit.at > MACRO_TTL ? 'stale' : 'fresh'),
+          breakerOpen: now < br.openUntil,
+          consecutiveFailures: br.fails,
+          lastSuccessAt: br.lastSuccessAt ? new Date(br.lastSuccessAt).toISOString() : null,
+        };
+      }
+      const scans = { trend: Object.keys(_trend).length, movers: Object.keys(_movers).length,
+        extremes: Object.keys(_extremes).length, gaps: Object.keys(_gaps).length, rs: Object.keys(_rs).length };
+      const degraded = Object.values(macro).some(m => m.breakerOpen || m.state === 'empty');
+      return send(res, 200, JSON.stringify({
+        status: degraded ? 'degraded' : 'ok',
+        servedAt: new Date().toISOString(),
+        uptimeSec: Math.round(process.uptime()),
+        universe: { tracked: STOCKS.length, listedExtra: EQUITY_EXTRA.length },
+        providers: {
+          macro: { source: 'DBnomics (World Bank WDI + IMF WEO)', indicators: macro },
+          swot: { source: 'Trendlyne + in-house engine', breakerOpen: now < _swotBreaker.openUntil,
+                  consecutiveFailures: _swotBreaker.fails, cachedSymbols: _swotCache.size,
+                  localOnly: SWOT_LOCAL_ONLY },
+          fiiDii: { source: 'NSE', daysTracked: Object.keys(_fiidii.hist || {}).length, cacheAgeMin: ageMin(_fiidii.at) },
+        },
+        scanCaches: scans,
+      }));
+    }
+
     if (HEAVY_PATHS.has(u.pathname) && rateLimited(req))
-      return send(res, 429, JSON.stringify({ error: 'Too many requests — please slow down (30 heavy calls/min).' }));
+      return send(res, 429, JSON.stringify(apiError('RATE_LIMITED',
+        'Too many requests - please slow down (30 heavy calls/min).', { retryable: true, requestId: res._rid })));
 
     if (u.pathname === '/api/trend') {
-      const tf = u.searchParams.get('tf') || '1 Day';
-      const uni = u.searchParams.get('uni') || 'Nifty 50';
+      const tf  = pickOne(res, u, 'tf', TIMEFRAMES, '1 Day');   if (tf  === null) return;
+      const uni = pickOne(res, u, 'uni', UNIVERSES, 'Nifty 50'); if (uni === null) return;
       const cfg = parseMaConfig(u.searchParams.get('matype'), u.searchParams.get('mas'));
       const force = u.searchParams.get('fresh') === '1';     // Refresh button bypasses the cache
-      return send(res, 200, JSON.stringify(await topTrend(tf, uni, cfg, force)));
+      try {
+        const d = await topTrend(tf, uni, cfg, force);
+        return send(res, 200, JSON.stringify(withMeta(d, { source: 'Yahoo Finance', ttlMs: TREND_TTL,
+          coverage: `${(d.stocks || []).length} ${uni} names, ${tf} candles` })));
+      }
+      catch (e) { return upstreamFail(res, '/api/trend', e, { source: 'Yahoo Finance', extra: { rows: [] } }); }
     }
 
     if (u.pathname === '/api/news') {
-      const q = u.searchParams.get('q') || '';
+      const q = (u.searchParams.get('q') || '').slice(0, 120);   // bound the free-text search
       try {
         const items = await fetchNews(q);
         return send(res, 200, JSON.stringify({ q, asOf: new Date().toISOString(), items }));
       } catch (e) {
-        return send(res, 502, JSON.stringify({ error: String(e && e.message || e), items: [] }));
+        return upstreamFail(res, '/api/news', e, { source: 'Google News', extra: { items: [] } });
       }
     }
 
     if (u.pathname === '/api/movers') {
-      const uni = u.searchParams.get('uni') || 'Nifty 50';
-      const period = (u.searchParams.get('period') || 'daily').toLowerCase();
-      return send(res, 200, JSON.stringify(await topMovers(uni, MOVER_LOOKBACK[period] ? period : 'daily')));
+      const uni = pickOne(res, u, 'uni', UNIVERSES, 'Nifty 50'); if (uni === null) return;
+      const period = pickOne(res, u, 'period', MOVER_PERIODS, 'daily'); if (period === null) return;
+      try {
+        const d = await topMovers(uni, period);
+        return send(res, 200, JSON.stringify(withMeta(d, { source: 'Yahoo Finance', ttlMs: MOVERS_TTL,
+          coverage: `${d.count} ${uni} names, ${period} return` })));
+      }
+      catch (e) { return upstreamFail(res, '/api/movers', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/extremes') {
-      const uni = u.searchParams.get('uni') || 'Nifty 500';
-      return send(res, 200, JSON.stringify(await topExtremes(uni)));
+      const uni = pickOne(res, u, 'uni', UNIVERSES, 'Nifty 500'); if (uni === null) return;
+      try {
+        const d = await topExtremes(uni, u.searchParams.get('fresh') === '1');
+        return send(res, 200, JSON.stringify(withMeta(d, { source: 'Yahoo Finance', ttlMs: EXTREMES_TTL,
+          coverage: `${d.count} ${uni} names, split-adjusted monthly bars over full available history` })));
+      }
+      catch (e) { return upstreamFail(res, '/api/extremes', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/gaps') {
-      const uni = u.searchParams.get('uni') || 'Nifty 50';
-      return send(res, 200, JSON.stringify(await topGaps(uni)));
+      const uni = pickOne(res, u, 'uni', UNIVERSES, 'Nifty 50'); if (uni === null) return;
+      try {
+        const d = await topGaps(uni);
+        return send(res, 200, JSON.stringify(withMeta(d, { source: 'Yahoo Finance', ttlMs: GAPS_TTL,
+          coverage: `${d.count} ${uni} names, session open vs previous close` })));
+      }
+      catch (e) { return upstreamFail(res, '/api/gaps', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/rs') {
-      const uni = u.searchParams.get('uni') || 'Nifty 50';
-      const period = u.searchParams.get('period') || '1M';
-      return send(res, 200, JSON.stringify(await topRS(uni, RS_LOOKBACK[period] ? period : '1M')));
+      const uni = pickOne(res, u, 'uni', UNIVERSES, 'Nifty 50'); if (uni === null) return;
+      const period = pickOne(res, u, 'period', RS_PERIODS, '1M'); if (period === null) return;
+      try {
+        const d = await topRS(uni, period);
+        return send(res, 200, JSON.stringify(withMeta(d, { source: 'Yahoo Finance', ttlMs: RS_TTL,
+          coverage: `${d.count} ${uni} names vs NIFTY, ${period} lookback` })));
+      }
+      catch (e) { return upstreamFail(res, '/api/rs', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/symbols') {
       // Nifty 500 first (has sector), then the rest of the listed NSE universe (sector unknown) —
       // so every search box can find any listed stock, not just the 500 we actively scan.
+      // The list only changes when the constituent/equity-master refresh runs, so it is worth a
+      // real cache entry: an ETag turns the repeat load into a 304 with no body at all.
       const all = STOCKS.map(s => ({ sym: s.sym, name: s.name, sector: s.sector }))
         .concat(EQUITY_EXTRA.map(s => ({ sym: s.sym, name: s.name, sector: '' })));
-      return send(res, 200, JSON.stringify({ symbols: all, count: all.length, tracked: STOCKS.length }));
+      const body = JSON.stringify({ symbols: all, count: all.length, tracked: STOCKS.length });
+      return sendCacheable(req, res, body, 3600);
     }
 
     if (u.pathname === '/api/indices') {
       // GOLD = MCX-style ₹-per-10g (see mcxGoldSnap) — domestic landed price, not raw COMEX USD.
-      const [data, gold] = await Promise.all([
-        pool(INDICES, 4, ([n, t]) => indexSnap(n, t)),
-        mcxGoldSnap(),
-      ]);
-      return send(res, 200, JSON.stringify({ indices: data, gold, asOf: new Date().toISOString() }));
+      try {
+        const [data, gold] = await Promise.all([
+          pool(INDICES, 4, ([n, t]) => indexSnap(n, t)),
+          mcxGoldSnap(),
+        ]);
+        return send(res, 200, JSON.stringify(withMeta({ indices: data, gold, asOf: new Date().toISOString() },
+          { source: 'Yahoo Finance', ttlMs: 60e3,
+            sourceAsOf: (data.find(d => d && d.sourceAsOf) || {}).sourceAsOf || null,
+            coverage: `${data.length} indices + indicative ₹/10g gold` })));
+      } catch (e) { return upstreamFail(res, '/api/indices', e, { source: 'Yahoo Finance', extra: { indices: [] } }); }
     }
 
     if (u.pathname === '/api/stock') {
-      const raw = (u.searchParams.get('sym') || '').toUpperCase().trim();
-      const tf = u.searchParams.get('tf') || '1 Day';
-      if (!raw) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      // free text is allowed here (the search box resolves company names), so only the length
+      // is bounded — every other sym-taking route below demands a real NSE ticker.
+      const raw = (u.searchParams.get('sym') || '').toUpperCase().trim().slice(0, 64);
+      const tf = pickOne(res, u, 'tf', TIMEFRAMES, '1 Day'); if (tf === null) return;
+      if (!raw) return badParam(res, 'sym');
       // resolve to a known stock by symbol or name (ranked), else treat the input as an NSE ticker
       let stock = resolveQuery(raw);
       if (!stock) stock = { sym: raw.replace('.NS',''), yh: raw.includes('.') ? raw : raw + '.NS', name: raw.replace('.NS',''), sector: '' };
@@ -3750,25 +4134,25 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (u.pathname === '/api/quote') {
-      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim();
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
-      const ticker = sym.includes('.') ? sym : sym + '.NS';
-      const data = await quote(ticker);
-      if (!data) return send(res, 404, JSON.stringify({ error: 'not found' }));
-      return send(res, 200, JSON.stringify(data));
+      const sym = pickSym(res, u); if (sym === null) return;
+      try {
+        const data = await quote(sym + '.NS');
+        if (!data) return send(res, 404, JSON.stringify(apiError('NOT_FOUND',
+          `No quote is available for "${sym}".`, { retryable: false, requestId: res._rid })));
+        return send(res, 200, JSON.stringify(withMeta(data, { source: 'Yahoo Finance', ttlMs: 60e3,
+          sourceAsOf: data.sourceAsOf || null, coverage: '1-year daily history for the 50/200-DMA' })));
+      } catch (e) { return upstreamFail(res, '/api/quote', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/atr') {
-      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim().replace('.NS', '');
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      const sym = pickSym(res, u); if (sym === null) return;
       try { return send(res, 200, JSON.stringify(await tvAtr(sym))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/atr', e, { source: 'TradingView' }); }
     }
 
     if (u.pathname === '/api/ratios') {
-      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim();
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
-      const ticker = TICKER_OVERRIDE[sym] || (sym.includes('.') || sym.startsWith('^') ? sym : sym + '.NS');
+      const sym = pickSym(res, u); if (sym === null) return;
+      const ticker = TICKER_OVERRIDE[sym] || sym + '.NS';
       // banks/NBFCs/insurers: generic statement ratios (op-margin, D/E, interest cover) are
       // meaningless, and their real ratios (NIM, NPA, CASA, CRAR) aren't in Yahoo fundamentals.
       // Capital-market financials (exchanges, brokers, AMCs — see NON_LENDER_FIN) are exempt.
@@ -3831,34 +4215,34 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (u.pathname === '/api/index') {
-      const name = u.searchParams.get('name') || 'Nifty 50';
-      if (!INDEX_DEFS[name]) return send(res, 404, JSON.stringify({ error: 'unknown index' }));
-      return send(res, 200, JSON.stringify(await indexPage(name)));
+      // the canonical name is the frontend's own label ("Nifty 50", not "NIFTY 50") — the
+      // allowlist is INDEX_DEFS itself, so the two can never drift apart silently.
+      const name = pickOne(res, u, 'name', Object.keys(INDEX_DEFS), 'Nifty 50'); if (name === null) return;
+      try { return send(res, 200, JSON.stringify(await indexPage(name))); }
+      catch (e) { return upstreamFail(res, '/api/index', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/sentiment') {
-      const q = (u.searchParams.get('sym') || u.searchParams.get('q') || '').trim();
-      if (!q) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      const q = (u.searchParams.get('sym') || u.searchParams.get('q') || '').trim().slice(0, 120);
+      if (!q) return badParam(res, 'sym');
       try {
         return send(res, 200, JSON.stringify(await analyzeSentiment(q)));
       } catch (e) {
-        return send(res, 502, JSON.stringify({ error: String(e && e.message || e) }));
+        return upstreamFail(res, '/api/sentiment', e, { source: 'Google News' });
       }
     }
 
     if (u.pathname === '/api/management') {
-      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim();
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      const sym = pickSym(res, u); if (sym === null) return;
       try { return send(res, 200, JSON.stringify(await companyManagement(sym))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e), officers: [] })); }
+      catch (e) { return upstreamFail(res, '/api/management', e, { source: 'Yahoo Finance', extra: { officers: [] } }); }
     }
 
     if (u.pathname === '/api/profile') {
       // live "About this company" for ANY listed symbol (description, industry, HQ, mcap…).
       // Curated segment splits are overlaid HERE (read fresh from segmentCurated.json per
       // request) so hand-added splits show up immediately, never trapped in the 7-day cache.
-      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim().replace(/\.NS$/, '');
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      const sym = pickSym(res, u); if (sym === null) return;
       try {
         // filed segments usually answer from the 45-day cache instantly; a cold NSE fetch is
         // capped at 9s so the About panel never hangs on it (it finishes in bg for next view)
@@ -3868,12 +4252,11 @@ const server = http.createServer(async (req, res) => {
         ]);
         return send(res, 200, JSON.stringify({ ...data, filed, curated: curatedSegments(sym) }));
       }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/profile', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/swot') {
-      const sym = (u.searchParams.get('sym') || '').trim().toUpperCase().replace(/\.NS$/, '');
-      if (!sym) return send(res, 400, JSON.stringify(apiError('MISSING_PARAM', 'A stock symbol is required.', { retryable: false })));
+      const sym = pickSym(res, u); if (sym === null) return;
       try {
         return send(res, 200, JSON.stringify(await fetchSwot(sym)));
       } catch (e) {
@@ -3889,121 +4272,165 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    if (u.pathname === '/api/portfolio') {
-      // h = comma-separated SYM:QTY:BUY  (BUY optional). e.g. RELIANCE:10:1200,INFY:25:1450,ITC:100:
-      const raw = (u.searchParams.get('h') || '').trim();
-      if (!raw) return send(res, 400, JSON.stringify({ error: 'h required (SYM:QTY:BUY,...)' }));
-      const holdings = raw.split(',').map(s => {
-        const [sym, qty, buy] = s.split(':');
-        return { sym: (sym || '').trim().toUpperCase().replace(/\.NS$/, ''), qty: +qty || 0, buy: (buy != null && buy !== '' && !isNaN(+buy)) ? +buy : null };
-      }).filter(x => x.sym && x.qty > 0).slice(0, 60);
-      if (!holdings.length) return send(res, 400, JSON.stringify({ error: 'no valid holdings' }));
+    // Portfolio analysis accepts POST { holdings: [{sym, qty, buy}] } as well as the original
+    // ?h=SYM:QTY:BUY,… query. Holdings in a URL get written to proxy logs and browser history
+    // and hit length limits, so the frontend now POSTs; GET stays for shareable links.
+    if (u.pathname === '/api/portfolio' || u.pathname === '/api/portfolio/analyze') {
+      let holdings;
+      if (req.method === 'POST') {
+        let body;
+        try { body = await readJsonBody(req); }
+        catch (e) {
+          const status = e.status || 400;
+          return send(res, status, JSON.stringify(apiError(status === 413 ? 'BODY_TOO_LARGE' : 'INVALID_BODY',
+            e.message, { retryable: false, requestId: res._rid })));
+        }
+        holdings = parseHoldings(body.holdings);
+      } else {
+        holdings = parseHoldings(u.searchParams.get('h'));
+      }
+      if (!holdings.length) return send(res, 400, JSON.stringify(apiError('INVALID_PARAM',
+        'At least one valid holding is required (symbol and a positive quantity).',
+        { retryable: false, requestId: res._rid, detail: { maxHoldings: MAX_HOLDINGS } })));
       try {
         return send(res, 200, JSON.stringify(await analyzePortfolio(holdings)));
       } catch (e) {
-        return send(res, 502, JSON.stringify({ error: String(e && e.message || e) }));
+        return upstreamFail(res, '/api/portfolio', e, { source: 'Yahoo Finance' });
       }
     }
 
     if (u.pathname === '/api/pulse') {
       try { return send(res, 200, JSON.stringify(await pulseData())); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/pulse', e); }
     }
 
     if (u.pathname === '/api/breadth') {
       // Fast, non-blocking breadth for one universe. Nifty 50 is warmed at startup (even in
       // LIGHT_START) so it returns instantly; Nifty 500 warms in the background and fills in.
-      const uni = u.searchParams.get('uni') || 'Nifty 500';
+      const uni = pickOne(res, u, 'uni', UNIVERSES, 'Nifty 500'); if (uni === null) return;
       const force = u.searchParams.get('force') === '1';
-      try { return send(res, 200, JSON.stringify(computeBreadth(uni, force))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      try {
+        const d = computeBreadth(uni, force);
+        return send(res, 200, JSON.stringify(withMeta(d, { source: 'Yahoo Finance', ttlMs: BREADTH_TTL,
+          fetchedAt: d.breadth && d.breadth.asOf, coverage: `${(d.breadth || {}).n || 0} names` })));
+      }
+      catch (e) { return upstreamFail(res, '/api/breadth', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/watch') {
-      const syms = (u.searchParams.get('syms') || '').split(',').map(s => s.trim().toUpperCase().replace(/\.NS$/, '')).filter(Boolean).slice(0, 30);
-      if (!syms.length) return send(res, 400, JSON.stringify({ error: 'syms required' }));
+      const syms = (u.searchParams.get('syms') || '').split(',')
+        .map(s => s.trim().toUpperCase().replace(/\.NS$/, '')).filter(s => SYM_RE.test(s)).slice(0, 30);
+      if (!syms.length) return badParam(res, 'syms');
       try { return send(res, 200, JSON.stringify({ rows: await watchQuotes(syms), asOf: new Date().toISOString() })); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/watch', e, { source: 'Yahoo Finance', extra: { rows: [] } }); }
     }
 
     if (u.pathname === '/api/sparks') {
       try { return send(res, 200, JSON.stringify(await sparksData())); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/sparks', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/delivery') {
-      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim().replace(/\.NS$/, '');
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      const sym = pickSym(res, u); if (sym === null) return;
       try {
         const data = await deliveryAnalytics(sym);
-        if (!data) return send(res, 404, JSON.stringify({ error: 'No NSE delivery data for "' + sym + '" (EQ series only)' }));
-        return send(res, 200, JSON.stringify(data));
-      } catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+        if (!data) return send(res, 404, JSON.stringify(apiError('NOT_FOUND',
+          `NSE publishes no delivery data for "${sym}" (EQ series only).`, { retryable: false, requestId: res._rid })));
+        // Bhavcopy is an END-OF-DAY file: today's session never appears until after the close.
+        return send(res, 200, JSON.stringify(withMeta(data, { source: 'NSE bhavcopy (sec_bhavdata_full)',
+          sourceAsOf: data.asOf, cacheState: 'fresh', coverage: `${data.days.length} trading days` })));
+      } catch (e) { return upstreamFail(res, '/api/delivery', e, { source: 'NSE' }); }
     }
 
     if (u.pathname === '/api/delivery-spikes') {
-      const uni = u.searchParams.get('uni') || 'Nifty 500';
+      const uni = pickOne(res, u, 'uni', UNIVERSES, 'Nifty 500'); if (uni === null) return;
       try { return send(res, 200, JSON.stringify(await deliverySpikes(uni))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/delivery-spikes', e, { source: 'NSE' }); }
     }
 
     if (u.pathname === '/api/fii-dii') {
-      try { return send(res, 200, JSON.stringify(await fiidiiFlows())); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      try {
+        const d = await fiidiiFlows();
+        const last = (d.history || [])[(d.history || []).length - 1];
+        return send(res, 200, JSON.stringify(withMeta(d, { source: 'NSE fiidiiTradeReact',
+          sourceAsOf: last ? last.date : null, cacheState: 'fresh',
+          coverage: `${(d.history || []).length} trading days archived` })));
+      }
+      catch (e) { return upstreamFail(res, '/api/fii-dii', e, { source: 'NSE', extra: { history: [] } }); }
     }
 
     if (u.pathname === '/api/deals') {
-      try { return send(res, 200, JSON.stringify(await dealsData())); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      try {
+        const d = await dealsData();
+        return send(res, 200, JSON.stringify(withMeta(d, { source: 'NSE bulk & block deals archive',
+          cacheState: 'fresh', coverage: `${(d.rows || []).length} deals` })));
+      }
+      catch (e) { return upstreamFail(res, '/api/deals', e, { source: 'NSE', extra: { rows: [] } }); }
     }
 
     if (u.pathname === '/api/earnings') {
-      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim().replace(/\.NS$/, '');
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      const sym = pickSym(res, u); if (sym === null) return;
       try { return send(res, 200, JSON.stringify(await earningsReport(sym))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/earnings', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/earnings-calendar') {
-      try { return send(res, 200, JSON.stringify(await earningsCalendar())); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      // rebuilt from the NSE board-meeting feed on a slow cycle — cheap to revalidate, expensive
+      // to re-download (~130 KB), so it gets the same ETag treatment as the symbol directory.
+      try {
+        const body = JSON.stringify(await earningsCalendar());
+        return sendCacheable(req, res, body, 900);
+      }
+      catch (e) { return upstreamFail(res, '/api/earnings-calendar', e, { source: 'NSE', extra: { rows: [] } }); }
     }
 
     if (u.pathname === '/api/peers') {
-      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim().replace(/\.NS$/, '');
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      const sym = pickSym(res, u); if (sym === null) return;
       try { return send(res, 200, JSON.stringify(await peerCompare(sym))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/peers', e, { source: 'TradingView' }); }
     }
 
     if (u.pathname === '/api/thesis') {
-      const sym = (u.searchParams.get('sym') || '').toUpperCase().trim().replace(/\.NS$/, '');
-      if (!sym) return send(res, 400, JSON.stringify({ error: 'sym required' }));
+      const sym = pickSym(res, u); if (sym === null) return;
       try { return send(res, 200, JSON.stringify(await buildThesis(sym))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/thesis', e); }
     }
 
-    if (u.pathname === '/api/pfbacktest') {
-      const raw = (u.searchParams.get('h') || '').trim();
-      if (!raw) return send(res, 400, JSON.stringify({ error: 'h required (SYM:QTY,...)' }));
-      const holdings = raw.split(',').map(s => {
-        const [sym, qty] = s.split(':');
-        return { sym: (sym || '').trim().toUpperCase().replace(/\.NS$/, ''), qty: +qty || 0 };
-      }).filter(x => x.sym && x.qty > 0).slice(0, 60);
-      if (!holdings.length) return send(res, 400, JSON.stringify({ error: 'no valid holdings' }));
+    if (u.pathname === '/api/pfbacktest' || u.pathname === '/api/portfolio/backtest') {
+      let holdings;
+      if (req.method === 'POST') {
+        let body;
+        try { body = await readJsonBody(req); }
+        catch (e) {
+          const status = e.status || 400;
+          return send(res, status, JSON.stringify(apiError(status === 413 ? 'BODY_TOO_LARGE' : 'INVALID_BODY',
+            e.message, { retryable: false, requestId: res._rid })));
+        }
+        holdings = parseHoldings(body.holdings);
+      } else {
+        holdings = parseHoldings(u.searchParams.get('h'));
+      }
+      if (holdings.length < 2) return send(res, 400, JSON.stringify(apiError('INVALID_PARAM',
+        'A backtest needs at least two holdings with enough price history.',
+        { retryable: false, requestId: res._rid, detail: { minHoldings: 2, maxHoldings: MAX_HOLDINGS } })));
       try { return send(res, 200, JSON.stringify(await backtestPortfolio(holdings))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/pfbacktest', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/possize') {
-      const syms = (u.searchParams.get('syms') || '').split(',').map(s => s.trim()).filter(Boolean);
-      const amount = +u.searchParams.get('amount') || 0;
-      const capPct = (+u.searchParams.get('cap') || 25) / 100;
+      const syms = (u.searchParams.get('syms') || '').split(',')
+        .map(s => s.trim().toUpperCase().replace(/\.NS$/, '')).filter(s => SYM_RE.test(s)).slice(0, MAX_HOLDINGS);
+      if (!syms.length) return badParam(res, 'syms');
+      const amount = Math.min(Math.max(+u.searchParams.get('amount') || 0, 0), 1e11);
+      const capPct = Math.min(Math.max(+u.searchParams.get('cap') || 25, 1), 100) / 100;
       const convictions = {};
       const cv = u.searchParams.get('conv');   // "SYM:score,SYM:score"
-      if (cv) cv.split(',').forEach(p => { const [s, v] = p.split(':'); if (s) convictions[s.trim().toUpperCase()] = v; });
+      if (cv) cv.split(',').slice(0, MAX_HOLDINGS).forEach(p => {
+        const [s, v] = p.split(':'); const k = (s || '').trim().toUpperCase();
+        if (SYM_RE.test(k)) convictions[k] = v;
+      });
       try { return send(res, 200, JSON.stringify(await positionSizingPortfolio(syms, { amount, capPct, convictions }))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/possize', e, { source: 'Yahoo Finance' }); }
     }
 
     if (u.pathname === '/api/macro') {
@@ -4011,7 +4438,7 @@ const server = http.createServer(async (req, res) => {
       const force = u.searchParams.get('fresh') === '1';   // ↻ Refresh triggers a background re-pull
       if (!WB_INDICATORS[ind]) {
         return send(res, 400, JSON.stringify(apiError('UNKNOWN_INDICATOR', 'Unknown macro indicator.',
-          { retryable: false, detail: { available: Object.keys(WB_INDICATORS) } })));
+          { retryable: false, requestId: res._rid, detail: { available: Object.keys(WB_INDICATORS) } })));
       }
       // warm=1 asks the server to BLOCK until the build lands instead of answering from cache.
       // Only `npm run refresh-data` uses it (to produce the committed snapshot); the browser
@@ -4023,7 +4450,7 @@ const server = http.createServer(async (req, res) => {
         // never depends on the network. 503, not 502: this is "not ready yet", and retryable.
         return send(res, 503, JSON.stringify(apiError(e.code || 'UPSTREAM_UNAVAILABLE',
           'Macro data is refreshing and no cached copy is available yet.',
-          { retryable: true, source: 'DBnomics', cachedDataAvailable: false })));
+          { retryable: true, source: 'DBnomics', cachedDataAvailable: false, requestId: res._rid })));
       }
     }
 
@@ -4035,12 +4462,12 @@ const server = http.createServer(async (req, res) => {
         const doc = readLocalJson('macroCurated.json');
         const list = Object.keys(doc.indicators || {}).map(k => ({ key: k, label: doc.indicators[k].label }));
         return send(res, 200, JSON.stringify({ updated: doc.updated, indicators: list }));
-      } catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      } catch (e) { return upstreamFail(res, '/api/macro-curated', e); }
     }
 
     if (u.pathname === '/api/georisk') {
       try { return send(res, 200, JSON.stringify(readLocalJson('geopoliticalRisk.json'))); }
-      catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      catch (e) { return upstreamFail(res, '/api/georisk', e); }
     }
 
     if (u.pathname === '/api/macro-geo') {
@@ -4049,7 +4476,7 @@ const server = http.createServer(async (req, res) => {
         // geometry never changes — let the browser cache it, unlike the no-store API responses
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=86400' });
         return res.end(JSON.stringify(geo));
-      } catch (e) { return send(res, 502, JSON.stringify({ error: String(e && e.message || e) })); }
+      } catch (e) { return upstreamFail(res, '/api/macro-geo', e); }
     }
 
     // static file — the app is a single HTML page; every other asset loads from a CDN or /api.
@@ -4062,14 +4489,47 @@ const server = http.createServer(async (req, res) => {
     if (!fs.existsSync(fp) || !fs.statSync(fp).isFile()) return send(res, 404, 'Not found', 'text/plain');
     const ext = path.extname(fp).toLowerCase();
     const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+    if (ext === '.html' && CF_BEACON_TOKEN)
+      return send(res, 200, withAnalytics(fs.readFileSync(fp, 'utf8')), 'text/html');
     return send(res, 200, fs.readFileSync(fp), types[ext] || 'application/octet-stream');
   } catch (e) {
-    return send(res, 500, JSON.stringify({ error: String(e && e.message || e) }));
+    // last-resort net: a bug in a handler must not hand the stack trace to the browser either.
+    console.error(`[api] ${u.pathname} INTERNAL rid=${res._rid}:`, e);
+    return send(res, 500, JSON.stringify(apiError('INTERNAL',
+      'Something went wrong on our side.', { retryable: true, requestId: res._rid })));
   }
 });
 
+// ─────────── testability ───────────
+// The calculation layer is pure and deterministic, so the audit's regression tests exercise it
+// directly against recorded provider fixtures rather than through HTTP against a live market
+// (which would make every expected value a moving target).
+//
+// The opt-OUT is an explicit env flag rather than `require.main === module`: this file is also
+// started as `node -e "process.env.PORT=…; require('./server.js')"` by .claude/launch.json and
+// by some hosts, and under `node -e` require.main is undefined — a require.main check would
+// silently stop those from ever listening. Only the unit tests set MARKETPULSE_NO_LISTEN.
+module.exports = {
+  // price-series adjustment & reference closes
+  effectiveSplits, adjustedSeries, adjustedCloses, refCloses, prevSessionClose, adjustedOHLC, adjustedCandles,
+  // indicators
+  sma, ema, movingAvg, rollingMA, computeMas, parseMaConfig,
+  // portfolio / sizing / backtest maths
+  pearson, ps_normalize, ps_applyCap, sizeByRiskParity, adjCloseMap,
+  // fundamentals & scoring
+  computeForensics, round2, sdiv,
+  // parsing & normalisation
+  nseDateMs, bhavKey, istToday, csvSplit, scoreSentence, sentimentLabel, relevanceAliases, isRelevant,
+  breadthFromSpark, mgmtRank, extractSegments,
+  // API contract helpers
+  apiError, parseHoldings, SYM_RE, withMeta, marketStatusIST,
+};
+
+if (process.env.MARKETPULSE_NO_LISTEN !== '1') initAndListen();
+
 // ─────────── startup: hydrate universes + warm the heavy scans ───────────
-(async function init() {
+async function initAndListen() {
+  await (async function init() {
   // 1) instant: hydrate from disk cache so the very first request is never empty
   const disk = cacheLoad('constituents');
   if (disk.stocks && disk.stocks.length) {
@@ -4136,6 +4596,7 @@ const server = http.createServer(async (req, res) => {
     //    NSE is unreachable — they serve the committed .cache/segfiled.json snapshot instead.
     setTimeout(() => warmFiledSegments().catch(() => {}), 30000);
   }
-})();
+  })();
 
-server.listen(PORT, () => console.log(`MarketPulse running → http://localhost:${PORT}`));
+  server.listen(PORT, () => console.log(`MarketPulse running → http://localhost:${PORT}`));
+}

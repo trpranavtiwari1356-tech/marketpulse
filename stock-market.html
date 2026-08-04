@@ -12,11 +12,18 @@
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 <style>
   :root {
-    /* professional institutional palette — deep navy-charcoal, steel blue, muted gold */
-    --bg: #0a0d12;        /* deep charcoal with a blue cast */
-    --surface: #10141a;   /* raised panels */
-    --surface2: #171c24;
-    --border: #262c36;
+    /* glassmorphism on a pure-black canvas — translucent panels, steel blue, muted gold.
+       --surface/--surface2 are now TRANSLUCENT whites: over the black body they read as
+       the old charcoal greys, but they let whatever sits behind them show through and pick
+       up the frosted blur from the .glass rule below. Anything that FLOATS over other
+       content (nav, dropdowns, tooltips, modals) must use --solid instead, or text bleeds
+       through it. */
+    --bg: #000000;        /* pure black canvas */
+    --surface: rgba(255,255,255,.045);   /* raised glass panels */
+    --surface2: rgba(255,255,255,.085);  /* inputs, chips, hover rows */
+    --solid: #0b0d10;     /* opaque near-black for overlays that must occlude */
+    --border: rgba(255,255,255,.11);
+    --glass-blur: blur(16px) saturate(150%);
     --accent: #6b9bd1;    /* desaturated steel blue */
     --accent2: #2ea36b;
     --gold: #c9a35f;      /* premium gold accent */
@@ -56,12 +63,9 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    /* faint blue/gold radial washes give the flat charcoal a premium sense of depth */
-    background:
-      radial-gradient(1100px 700px at 85% -10%, rgba(107,155,209,.055), transparent 60%),
-      radial-gradient(900px 600px at -10% 0%, rgba(201,163,95,.035), transparent 55%),
-      var(--bg);
-    background-attachment: fixed;
+    /* flat pure black — no radial washes, no gradient. The depth now comes from the
+       frosted glass panels, not from the canvas. */
+    background: var(--bg);
     color: var(--text);
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
@@ -78,18 +82,33 @@
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid var(--bg); }
   ::-webkit-scrollbar-thumb:hover { background: #333b48; }
   ::selection { background: rgba(107,155,209,.35); color: var(--text); }
-  /* faint 1px top highlight on raised panels — reads as machined edges, not flat rectangles */
-  .idx-card, .pulse-card, .pf-card, .chart-box, .info-box, .desc-box, .senti-card,
-  .ps-card, .mover-col, .pf-stat, .fx-card, .th-card, .sa-box, .forensic-card, .glance-chip {
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.035); }
+  /* ── GLASSMORPHISM ──
+     One rule frosts every raised panel: the translucent --surface fill lets the black
+     canvas through, backdrop-filter blurs+saturates whatever is behind it, and the inset
+     top highlight gives the pane a lit edge. Panels that must occlude scrolling content
+     (nav, dropdowns, tooltips, modals) are handled separately with --solid. */
+  .card, .idx-card, .pulse-card, .pf-card, .pf-input-card, .pf-pill, .chart-box, .info-box,
+  .desc-box, .senti-card, .ps-card, .ps-costs, .mover-col, .pf-stat, .fx-card,
+  .fx-hist, .spk-col, .th-card, .sa-box, .forensic-card, .glance-chip, .ticker-wrap,
+  .macro-side, .macro-map-card, .mgmt-card, .gov-item, .idx-hero, .members-table,
+  .candle-wrap, .dlv-signal, .dlv-chart, .earn-next, .big-box, .contract-card {
+    /* NB: high-count repeated elements (heatmap cells, headline rows, table rows) are
+       deliberately NOT in this list — they still read as glass via the translucent
+       --surface fill, but each backdrop-filter is its own compositing layer and a hundred
+       of them tanks scroll performance. */
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  /* lift on hover reads better on glass when the edge brightens too */
+  .card:hover, .idx-card:hover, .glance-chip:hover { border-color: rgba(255,255,255,.2); }
   /* visible keyboard-focus ring for accessibility, without touching mouse clicks */
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
   button:focus:not(:focus-visible), input:focus:not(:focus-visible), select:focus:not(:focus-visible) { outline: none; }
 
   /* NAV */
   nav {
-    background: rgba(16,20,26,.88);
-    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    background: rgba(10,10,12,.72);
+    backdrop-filter: blur(20px) saturate(150%); -webkit-backdrop-filter: blur(20px) saturate(150%);
     border-bottom: 1px solid var(--border);
     padding: 0 2rem; gap: 16px;
     display: flex;
@@ -177,7 +196,9 @@
     background: rgba(0,0,0,.8); backdrop-filter: blur(4px); }
   .tv-modal.open { display: flex; align-items: center; justify-content: center; padding: 18px; }
   .tv-modal-card { width: min(1180px, 96vw); height: min(84vh, 800px);
-    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    background: rgba(14,16,20,.82); backdrop-filter: blur(26px) saturate(160%);
+    -webkit-backdrop-filter: blur(26px) saturate(160%);
+    border: 1px solid var(--border); border-radius: 14px;
     display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 80px rgba(0,0,0,.65); }
   .tv-modal-head { display: flex; align-items: center; gap: 12px; padding: 11px 15px;
     border-bottom: 1px solid var(--border); flex-wrap: wrap; }
@@ -363,7 +384,7 @@
   /* premium floating tooltip */
   .hm-tooltip {
     position: fixed; z-index: 1000; pointer-events: none;
-    background: #10141aee; backdrop-filter: blur(6px);
+    background: rgba(11,13,16,.93); backdrop-filter: blur(14px) saturate(150%);
     border: 1px solid var(--border); border-radius: 10px;
     padding: 12px 14px; min-width: 210px;
     box-shadow: 0 14px 40px rgba(0,0,0,.6);
@@ -402,7 +423,7 @@
   .big-price .bp-val { font-size: 1.7rem; font-weight: 800; line-height: 1.1; }
   .big-price .bp-ret { font-size: 0.95rem; font-weight: 700; }
   .big-ma-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.1rem; }
-  .big-ma { border-radius: 12px; padding: 1rem 1.1rem; background: #0a0d1235; border: 1px solid var(--border); }
+  .big-ma { border-radius: 12px; padding: 1rem 1.1rem; background: rgba(255,255,255,.03); border: 1px solid var(--border); }
   .big-ma.up { border-color: rgba(46,163,107,.4); }
   .big-ma.dn { border-color: rgba(208,96,90,.4); }
   .big-ma.na { border-color: var(--border); }
@@ -417,12 +438,40 @@
   .big-verdict.bear    { background: rgba(208,96,90,.12);  color: var(--red); }
   .big-verdict.neutral { background: rgba(201,163,95,.12); color: var(--yellow); }
 
+  /* ===== FEEDBACK ===== */
+  /* Floating glass pill, present on every tab. Opens the Google Form in a new tab rather
+     than embedding it — a white Google iframe inside the black-glass shell looks foreign,
+     and the embed drops the respondent's file-upload/login features. */
+  .fb-fab {
+    position: fixed; right: 22px; bottom: 22px; z-index: 900;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 18px; border-radius: 999px;
+    background: rgba(255,255,255,.07); backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid rgba(255,255,255,.16); color: var(--text);
+    font-size: .84rem; font-weight: 600; text-decoration: none; cursor: pointer;
+    box-shadow: 0 10px 34px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.09);
+    transition: transform .18s cubic-bezier(.2,.8,.2,1), border-color .18s, background .18s;
+  }
+  .fb-fab:hover { transform: translateY(-2px); background: rgba(201,163,95,.16);
+    border-color: var(--gold); color: #fff; }
+  .fb-fab .ico { width: 1.05rem; height: 1.05rem; color: var(--gold); }
+  /* On phones the pill would sit on top of table content and the horizontal scrollers —
+     shrink to an icon-only circle and tuck it into the corner. */
+  @media (max-width: 620px) {
+    .fb-fab { right: 14px; bottom: 14px; padding: 12px; border-radius: 50%; }
+    .fb-fab span { display: none; }
+  }
+  @media print { .fb-fab { display: none; } }
+
   /* ===== TradingView-style autocomplete ===== */
   .ac-wrap { position: relative; }
   .ac-dropdown {
     position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 300;
-    background: #10141a; border: 1px solid var(--border); border-radius: 10px;
-    box-shadow: 0 16px 40px rgba(0,0,0,.65); overflow: hidden auto; max-height: 320px;
+    background: rgba(11,13,16,.94); backdrop-filter: blur(18px) saturate(150%);
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+    border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 16px 40px rgba(0,0,0,.75); overflow: hidden auto; max-height: 320px;
     display: none;
   }
   .ac-dropdown.show { display: block; }
@@ -562,6 +611,11 @@
   .ds-live { background: #14291e; color: var(--green); border: 1px solid #27865a; }
   .ds-sim  { background: #292115; color: var(--yellow); border: 1px solid #c9a35f; }
   .ds-load { background: var(--surface2); color: var(--accent); border: 1px solid var(--border); }
+  /* Truthful freshness states (audit 28-Jul-2026). "LIVE" was being printed over 5-60 minute
+     cached scans and over annual filings; these give the other states somewhere to live. */
+  .ds-cache { background: #16202c; color: #7fb3e0; border: 1px solid #35617f; }
+  .ds-closed{ background: #1e1e26; color: #a9a9c2; border: 1px solid #4a4a63; }
+  .ds-filed { background: #1b2620; color: #86c2a0; border: 1px solid #3c7355; }
   .ds-meta { color: var(--muted); }
   .ds-warn { color: var(--red); }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
@@ -921,18 +975,20 @@
   /* chart drawing/tools overlay */
   .chart-draw-canvas { position: absolute; inset: 0; z-index: 4; }
   .chart-tools { position: absolute; top: 8px; left: 8px; z-index: 5; display: flex; flex-direction: column; gap: 3px;
-    background: rgba(16,20,26,.9); border: 1px solid var(--border); border-radius: 9px; padding: 4px; backdrop-filter: blur(4px); }
+    background: rgba(11,13,16,.72); border: 1px solid var(--border); border-radius: 9px; padding: 4px; backdrop-filter: blur(14px) saturate(150%); -webkit-backdrop-filter: blur(14px) saturate(150%); }
   .chart-tools button { width: 28px; height: 28px; border: none; background: transparent; color: var(--muted);
     border-radius: 6px; cursor: pointer; font-size: .95rem; line-height: 1; display: flex; align-items: center; justify-content: center; }
   .chart-tools button:hover { background: var(--surface2); color: var(--text); }
   .chart-tools button.active { background: var(--accent); color: #fff; }
   .chart-tools-sep { height: 1px; background: var(--border); margin: 2px 0; }
   .chart-topbar { position: absolute; top: 8px; right: 8px; z-index: 5; display: flex; gap: 4px; }
-  .chart-topbar .ctb { height: 28px; padding: 0 9px; border: 1px solid var(--border); background: rgba(16,20,26,.9);
-    color: var(--muted); border-radius: 7px; cursor: pointer; font-size: .78rem; font-weight: 600; backdrop-filter: blur(4px); }
+  .chart-topbar .ctb { height: 28px; padding: 0 9px; border: 1px solid var(--border); background: rgba(255,255,255,.07);
+    color: var(--muted); border-radius: 7px; cursor: pointer; font-size: .78rem; font-weight: 600; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
   .chart-topbar .ctb:hover { border-color: var(--accent); color: var(--text); }
-  .chart-ma-menu { position: absolute; top: 42px; right: 8px; z-index: 7; background: var(--surface); border: 1px solid var(--border);
-    border-radius: 9px; padding: 5px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 12px 32px rgba(0,0,0,.55); min-width: 130px; }
+  .chart-ma-menu { position: absolute; top: 42px; right: 8px; z-index: 7;
+    background: rgba(11,13,16,.94); backdrop-filter: blur(18px) saturate(150%);
+    -webkit-backdrop-filter: blur(18px) saturate(150%); border: 1px solid var(--border);
+    border-radius: 9px; padding: 5px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 12px 32px rgba(0,0,0,.6); min-width: 130px; }
   .chart-ma-menu > button { text-align: left; padding: 7px 12px; border: none; background: none; color: var(--text);
     font-size: .8rem; cursor: pointer; border-radius: 6px; white-space: nowrap; }
   .chart-ma-menu > button:hover { background: var(--surface2); }
@@ -1191,7 +1247,7 @@
   .macro-tab.pending::after { content: " · planned"; font-size: .68rem; font-weight: 500; opacity: .8; }
   .macro-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
   @media (max-width: 1000px) { .macro-layout { grid-template-columns: 1fr; } }
-  .macro-map-card { background: linear-gradient(180deg, var(--surface), #0c1017);
+  .macro-map-card { background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
     border: 1px solid var(--border); border-radius: var(--radius); padding: 12px;
     box-shadow: 0 18px 48px -24px rgba(0,0,0,.8); }
   .macro-map-wrap { position: relative; overflow: hidden; border-radius: 10px;
@@ -3314,6 +3370,33 @@ function marketStatus() {
   const open = !holiday && day >= 1 && day <= 5 && mins >= 555 && mins <= 930; // 9:15–15:30, non-holiday
   return { open, ist, holiday };
 }
+// ── Truthful freshness badge (audit 28-Jul-2026) ──
+// Every scanner panel used to print a hard-coded "● LIVE" next to a timestamp, regardless of
+// whether the number came from a 5-minute cache, a 60-minute cache, yesterday's close, or a
+// set of annual filings. On a closed market that badge claimed a live feed for a snapshot that
+// could not change until the next session. This derives the state instead of asserting it:
+//
+//   LIVE           market is open AND the scan is inside its refresh window
+//   AT CLOSE       market is shut — the figures are the closing snapshot, not a live tick
+//   CACHED · Nm    a scan older than its refresh window (still shown, honestly aged)
+//
+// `ttlMs` must match the server-side TTL for that route, otherwise the badge lies in the other
+// direction. Current server TTLs: movers/gaps/rs/trend/breadth/index 5 min, extremes 60 min.
+function freshBadge(asOf, ttlMs) {
+  const { open } = marketStatus();
+  const ts = asOf ? new Date(asOf) : null;
+  const ageMs = ts ? Date.now() - ts.getTime() : null;
+  const clock = ts ? ts.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '';
+  const ageTxt = ageMs == null ? ''
+    : ageMs < 60e3 ? 'just now'
+    : ageMs < 3600e3 ? Math.round(ageMs / 60e3) + 'm ago'
+    : Math.round(ageMs / 3600e3) + 'h ago';
+  if (!open) return `<span class="ds-badge ds-closed">● AT CLOSE</span><span class="ds-meta">scanned ${clock} IST</span>`;
+  if (ageMs != null && ttlMs && ageMs > ttlMs)
+    return `<span class="ds-badge ds-cache">● CACHED</span><span class="ds-meta">${ageTxt}</span>`;
+  return `<span class="ds-badge ds-live">● LIVE</span><span class="ds-meta">${clock} IST</span>`;
+}
+
 function renderMarketStatus() {
   const { open, ist, holiday } = marketStatus();
   const t = ist.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
@@ -3504,7 +3587,7 @@ async function loadMovers() {
     if ((!j.gainers || !j.gainers.length) && (!j.losers || !j.losers.length)) throw new Error('empty');
     g.innerHTML = (j.gainers && j.gainers.length) ? j.gainers.map((s, i) => moverRow(i + 1, s, s.ret, '%')).join('') : `<div class="mv-empty">No gainers in ${uni} for this period.</div>`;
     l.innerHTML = (j.losers && j.losers.length) ? j.losers.map((s, i) => moverRow(i + 1, s, s.ret, '%')).join('') : `<div class="mv-empty">No losers in ${uni} for this period.</div>`;
-    st.innerHTML = `<span class="ds-badge ds-live">● LIVE</span> ${cap(period)} movers across ${j.count} ${uni} names · ${new Date(j.asOf).toLocaleTimeString('en-IN')}`;
+    st.innerHTML = `${freshBadge(j.asOf, 5 * 60e3)} · ${cap(period)} movers across ${j.count} ${uni} names`;
   } catch (e) {
     if (myReq !== moversReq) return;
     g.innerHTML = l.innerHTML = `<div class="mv-empty">${ic('warn')} Couldn't load movers. Is the Node server running?</div>`;
@@ -3513,17 +3596,22 @@ async function loadMovers() {
 }
 
 function extremeRow(rank, s, type) {
-  let label, cls;
+  let label, cls, sub;
   if (type === 'high') {                       // fromHigh ≤ 0  (distance below all-time high)
     if (s.fromHigh >= -0.5) { label = 'At ATH'; cls = 'up'; }
     else { label = s.fromHigh.toFixed(1) + '%'; cls = 'flat'; }
+    sub = s.athDate ? `ATH ${fmtInr(s.ath)} · ${s.athDate}` : '';
   } else {                                      // fromLow ≥ 0  (distance above all-time low)
     if (s.fromLow <= 0.5) { label = 'At ATL'; cls = 'dn'; }
+    // A split-adjusted low from 20+ years ago yields values like +359,137%, which reads as a
+    // glitch without its date. Show the multiple instead once it stops being a sane percentage.
+    else if (s.fromLow >= 1000) { label = '×' + Math.round(1 + s.fromLow / 100).toLocaleString('en-IN'); cls = 'flat'; }
     else { label = '+' + s.fromLow.toFixed(1) + '%'; cls = 'flat'; }
+    sub = s.atlDate ? `ATL ${fmtInr(s.atl)} · ${s.atlDate}` : '';
   }
   return `<div class="mover-row">
     <span class="mv-rank">${rank}</span>
-    <span class="mv-sub"><span class="mv-sym">${esc(s.sym)}</span><span class="mv-name">${esc(s.name || '')}</span></span>
+    <span class="mv-sub"><span class="mv-sym">${esc(s.sym)}</span><span class="mv-name">${esc(sub || s.name || '')}</span></span>
     <span class="mv-price">${fmtInr(s.price)}</span>
     <span class="mv-ret ${cls}">${label}</span>
   </div>`;
@@ -3546,7 +3634,12 @@ async function loadExtremes() {
     // fromHigh is ≤0 (distance below all-time high); fromLow is ≥0 (distance above all-time low)
     ah.innerHTML = j.ath.map((s, i) => extremeRow(i + 1, s, 'high')).join('');
     al.innerHTML = j.atl.map((s, i) => extremeRow(i + 1, s, 'low')).join('');
-    st.innerHTML = `<span class="ds-badge ds-live">● LIVE</span> Distance from all-time high / low across ${j.count} ${uni} names (split-adjusted weekly history) · ${new Date(j.asOf).toLocaleTimeString('en-IN')}`;
+    // "weekly history" was wrong: Yahoo downgrades a max-range request to MONTHLY bars, so the
+    // extreme is exact but its date is month-resolution. Say what the data actually is, and
+    // state the span covered — an "all-time" low is only all-time within the history we get.
+    const span = j.atl && j.atl[0] && j.atl[0].years ? `~${Math.max(...[...j.ath, ...j.atl].map(s => s.years || 0)).toFixed(0)} yrs max history` : '';
+    st.innerHTML = `${freshBadge(j.asOf, 60 * 60e3)} · Distance from all-time high / low across ${j.count} ${uni} names`
+      + ` <span class="ds-meta">· split-adjusted monthly bars${span ? ' · ' + span : ''}</span>`;
   } catch (e) {
     if (myReq !== extremesReq) return;
     ah.innerHTML = al.innerHTML = `<div class="mv-empty">${ic('warn')} Couldn't load all-time highs/lows.</div>`;
@@ -3584,7 +3677,7 @@ async function loadGaps() {
     if ((!j.ups || !j.ups.length) && (!j.downs || !j.downs.length)) throw new Error('empty');
     up.innerHTML = (j.ups && j.ups.length) ? j.ups.map((s, i) => gapRow(i + 1, s)).join('') : `<div class="mv-empty">No gap-ups in ${uni}.</div>`;
     dn.innerHTML = (j.downs && j.downs.length) ? j.downs.map((s, i) => gapRow(i + 1, s)).join('') : `<div class="mv-empty">No gap-downs in ${uni}.</div>`;
-    st.innerHTML = `<span class="ds-badge ds-live">● LIVE</span> Open-vs-previous-close gaps across ${j.count} ${uni} names · <span class="gap-tag open" style="margin:0">open</span> = still unfilled · ${new Date(j.asOf).toLocaleTimeString('en-IN')}`;
+    st.innerHTML = `${freshBadge(j.asOf, 5 * 60e3)} · Open-vs-previous-close gaps across ${j.count} ${uni} names · <span class="gap-tag open" style="margin:0">open</span> = still unfilled`;
   } catch (e) {
     if (myReq !== gapsReq) return;
     up.innerHTML = dn.innerHTML = `<div class="mv-empty">${ic('warn')} Couldn't load gaps. Is the Node server running?</div>`;
@@ -3623,7 +3716,7 @@ async function loadRS() {
     lg.innerHTML = (j.laggards && j.laggards.length) ? j.laggards.map((s, i) => rsRow(i + 1, s)).join('') : `<div class="mv-empty">Nothing in ${uni} is underperforming NIFTY over this period.</div>`;
     const idx = `NIFTY ${j.indexRet > 0 ? '+' : ''}${j.indexRet}%`;
     if (note) note.textContent = `— ${period} · ${idx} · RS = percentile of outperformance`;
-    st.innerHTML = `<span class="ds-badge ds-live">● LIVE</span> ${period} relative strength across ${j.count} ${uni} names vs ${idx} · ${new Date(j.asOf).toLocaleTimeString('en-IN')}`;
+    st.innerHTML = `${freshBadge(j.asOf, 5 * 60e3)} · ${period} relative strength across ${j.count} ${uni} names vs ${idx}`;
   } catch (e) {
     if (myReq !== rsReq) return;
     ld.innerHTML = lg.innerHTML = `<div class="mv-empty">${ic('warn')} Couldn't load relative strength.</div>`;
@@ -3667,7 +3760,7 @@ function renderSectorChart() {
   const colors = ['#6b9bd1','#2ea36b','#d0605a','#c9a35f','#9d8ec4','#52b788','#cfa070','#8fb4d9','#6fbf8f','#cf8079'];
   sectorChart = new Chart(ctx, {
     type:'doughnut',
-    data:{labels, datasets:[{data:vals, backgroundColor:colors.slice(0,labels.length), borderWidth:2, borderColor:'#171c24'}]},
+    data:{labels, datasets:[{data:vals, backgroundColor:colors.slice(0,labels.length), borderWidth:2, borderColor:'#000000'}]},
     options:{plugins:{legend:{position:'right', labels:{color:'#94a0b0',font:{size:10},boxWidth:12}}}, cutout:'60%'}
   });
 }
@@ -3944,7 +4037,7 @@ async function loadAboutProfile(sym, live) {
       `<div class="info-box"><h4>${esc(k)}</h4><p style="font-size:.95rem">${esc(v)}</p></div>`).join('')}</div>` : '';
     const site = j.website ? `<a href="${esc(j.website)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">${esc(j.website.replace(/^https?:\/\/(www\.)?/, ''))} ↗</a>` : '';
     el.innerHTML = `
-      <h3>${ic('doc')} About this company <span class="ds-badge ds-live" style="vertical-align:middle">● LIVE · Yahoo Finance</span></h3>
+      <h3>${ic('doc')} About this company <span class="ds-badge ds-cache" style="vertical-align:middle">● PROFILE · Yahoo Finance</span></h3>
       ${shortLine ? `<p style="font-size:1.02rem;font-weight:600;margin-bottom:.6rem">${esc(shortLine)}</p>` : ''}
       ${desc ? `<p>${esc(firstDot > 20 ? desc.slice(firstDot + 2) : desc)}</p>` : `<p style="color:var(--muted)">No business summary published for this symbol.</p>`}
       ${narrative ? `<p style="margin-top:.6rem">${esc(narrative)}</p>
@@ -3976,7 +4069,7 @@ function segDonut(canvasId, rows) {   // rows: [{label, pct}]
   return new Chart(document.getElementById(canvasId), {
     type: 'doughnut',
     data: { labels: rows.map(r => r.label), datasets: [{ data: rows.map(r => r.pct),
-      backgroundColor: rows.map((_, i) => SEG_COLORS[i % SEG_COLORS.length]), borderWidth: 1, borderColor: '#11151c' }] },
+      backgroundColor: rows.map((_, i) => SEG_COLORS[i % SEG_COLORS.length]), borderWidth: 1, borderColor: '#000000' }] },
     options: { responsive: true, maintainAspectRatio: false, cutout: '58%',
       plugins: { legend: { position: 'right', labels: { color: '#98a4b3', font: { size: 10 }, boxWidth: 10 } },
         tooltip: { callbacks: { label: c => c.label + ': ' + c.raw + '%' } } } }
@@ -4021,7 +4114,7 @@ function renderRevenueSection(j) {
       (quarter ended ${esc(filed.period || '—')}) — there is no product-wise revenue split to report. Details: ${nseAnnualReportLink(sym)}.</div>`;
   } else if (j && j.segmentNames && j.segmentNames.length) {
     segBlock = `
-      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">BUSINESS SEGMENTS <span class="ds-badge ds-live">● LIVE · stated in company profile</span></h4>
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">BUSINESS SEGMENTS <span class="ds-badge ds-cache">● STATED IN COMPANY PROFILE</span></h4>
       <div class="suggest-grid">${j.segmentNames.map(s => `<span class="suggest-chip" style="cursor:default">${esc(s)}</span>`).join('')}</div>
       <div style="font-size:.68rem;color:var(--muted);margin-top:.35rem">Segment names as the company itself states them. The official % split loads from the NSE segment filing (may still be fetching) — authoritative source: ${nseAnnualReportLink(sym)}.</div>`;
   } else {
@@ -4041,7 +4134,7 @@ function renderRevenueSection(j) {
       <div style="font-size:.68rem;color:var(--muted);margin-top:.35rem">Hand-curated from the ${esc(cur.fy || '')} ${esc(cur.source || 'annual report')} — verify against the latest ${nseAnnualReportLink(sym)}.</div>`;
   } else if (geoMentions.length) {
     geoBlock = `
-      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">COUNTRIES &amp; REGIONS OF OPERATION <span class="ds-badge ds-live">● LIVE · stated in company profile</span></h4>
+      <h4 style="font-size:.85rem;color:var(--muted);margin:1rem 0 .5rem">COUNTRIES &amp; REGIONS OF OPERATION <span class="ds-badge ds-cache">● STATED IN COMPANY PROFILE</span></h4>
       <div class="suggest-grid">${geoMentions.map(g => `<span class="suggest-chip" style="cursor:default">${esc(g)}</span>`).join('')}</div>
       <div style="font-size:.68rem;color:var(--muted);margin-top:.35rem">Extracted from the company's own business profile. Country-wise revenue % is published only in the ${nseAnnualReportLink(sym)}; add it to <b>segmentCurated.json</b> to chart it here.</div>`;
   } else {
@@ -4064,7 +4157,7 @@ function renderRevenueSection(j) {
   el.innerHTML = `
     <div class="section-header" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <h2 style="font-size:1.1rem">${ic('bulb')} Revenue Breakdown &amp; Footprint</h2>
-      <span class="ds-badge ds-live">● LIVE · reported annual filings</span></div>
+      <span class="ds-badge ds-filed">● REPORTED ANNUAL FILINGS</span></div>
     ${trendBlock}
     ${segBlock}
     ${geoBlock}`;
@@ -4121,7 +4214,7 @@ async function loadContractsNews(sym, name) {
       : `<div class="ratio-key">No contract or deal headlines for ${esc(q)} in the current news window — this section fills in automatically when order-win / M&amp;A / partnership stories appear.</div>`;
     el.innerHTML = `<div class="section-header" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <h2 style="font-size:1.1rem">${ic('doc')} Major Contracts &amp; Strategic Deals</h2>
-      <span class="ds-badge ds-live">● LIVE · news-derived</span></div>${body}`;
+      <span class="ds-badge ds-live">● LIVE · news headlines</span></div>${body}`;
   } catch (e) {
     el.innerHTML = `<div class="section-header"><h2 style="font-size:1.1rem">${ic('doc')} Major Contracts &amp; Strategic Deals</h2></div>
       <div class="ratio-key">Deal-news feed unavailable right now — <a href="#" style="color:var(--gold)" onclick="loadContractsNews('${esc(sym)}','${esc(name || sym)}');return false">retry</a>.</div>`;
@@ -4325,7 +4418,7 @@ function ratioTableHtml(bundle) {
   const range = yrsAll.length ? `FY${yrsAll[0]}–FY${yrsAll[yrsAll.length-1]}` : '';
   const curHdr = bundle.latestFY ? `Current (FY${bundle.latestFY})` : 'Current';
   const badge = live
-    ? '<span class="ds-badge ds-live" style="vertical-align:middle">● LIVE · computed from filings</span>'
+    ? '<span class="ds-badge ds-filed" style="vertical-align:middle">● COMPUTED FROM FILINGS</span>'
     : '<span class="ds-badge ds-sim" style="vertical-align:middle">● ESTIMATED</span>';
   const cats = [];
   bundle.ratios.forEach(r => { if (!cats.includes(r.cat)) cats.push(r.cat); });
@@ -4425,7 +4518,7 @@ function forensicsHtml(data) {
   if (!pio && !alt && !eq) return '';
   return `
     <div style="margin-bottom:1.5rem">
-      <div class="section-header" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h2 style="font-size:1.1rem">${ic('flask')} Forensic &amp; Quality Scores</h2><span class="ds-badge ds-live" style="vertical-align:middle">● LIVE${fy ? ' · ' + fy : ''}</span></div>
+      <div class="section-header" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h2 style="font-size:1.1rem">${ic('flask')} Forensic &amp; Quality Scores</h2><span class="ds-badge ds-filed" style="vertical-align:middle">● FILED${fy ? ' · ' + fy : ''}</span></div>
       <div class="forensic-grid">${pio}${alt}${eq}</div>
       <div class="ratio-key">Computed live from reported filings. <b>Piotroski F</b> (0–9) gauges fundamental momentum — 7+ strong, ≤3 weak. <b>Altman Z″</b> screens bankruptcy risk (emerging-market book-value variant — currency-safe). <b>Accruals</b> test whether profit is backed by cash. Not meaningful for banks/financials, so omitted there. Educational signal — not investment advice.</div>
     </div>`;
@@ -4692,7 +4785,7 @@ function renderStockInfo(s, live, ratioData) {
       type:'doughnut',
       data:{
         labels: s.revenue_sources.map(r=>r.label),
-        datasets:[{data:s.revenue_sources.map(r=>r.pct), backgroundColor:colors.slice(0,s.revenue_sources.length), borderWidth:2, borderColor:'#171c24'}]
+        datasets:[{data:s.revenue_sources.map(r=>r.pct), backgroundColor:colors.slice(0,s.revenue_sources.length), borderWidth:2, borderColor:'#000000'}]
       },
       options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'bottom',labels:{color:'#94a0b0',font:{size:9},boxWidth:10,padding:6}}}, cutout:'58%'}
     });
@@ -4705,7 +4798,7 @@ function renderStockInfo(s, live, ratioData) {
         type:'doughnut',
         data:{
           labels: s.geography.map(g=>g.country),
-          datasets:[{data:s.geography.map(g=>g.pct), backgroundColor:s.geography.map(g=>g.color), borderWidth:2, borderColor:'#171c24'}]
+          datasets:[{data:s.geography.map(g=>g.pct), backgroundColor:s.geography.map(g=>g.color), borderWidth:2, borderColor:'#000000'}]
         },
         options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'bottom',labels:{color:'#94a0b0',font:{size:9},boxWidth:10,padding:6}}}, cutout:'58%'}
       });
@@ -4724,8 +4817,16 @@ async function loadIndices() {
       const idxKey = CARD_TO_INDEX[i.name] || i.name;
       const click = `onclick="openIndex('${idxKey}')"`;
       if (i.error || i.value == null) return `<div class="idx-card" ${click}><div class="idx-name">${i.name}</div><div class="idx-val">—</div><div class="idx-chg ds-warn">no data</div></div>`;
-      const up = i.pct >= 0;
       const val = Number(i.value).toLocaleString('en-IN', {maximumFractionDigits:2});
+      // pct is null when the provider gave us no reference close (see prevSessionClose in
+      // server.js). Note `null >= 0` is TRUE in JS, so this must be an explicit null check —
+      // otherwise the card renders a green "▲ 0 (+null%)", which is worse than saying nothing.
+      if (i.pct == null) return `<div class="idx-card" ${click} title="No previous close published for this index">
+        <div class="idx-name">${i.name} <span style="opacity:.5">›</span></div>
+        <div class="idx-val">${val}</div>
+        <div class="idx-chg ds-warn" title="The data provider published no previous session close, so today's change cannot be computed.">change unavailable</div>
+      </div>`;
+      const up = i.pct >= 0;
       return `<div class="idx-card ${up?'up':'dn'}" ${click} title="Click for chart & constituents">
         <div class="idx-name">${i.name} <span style="opacity:.5">›</span></div>
         <div class="idx-val">${val}</div>
@@ -4748,6 +4849,11 @@ function navPill(elId, label, o, prefix) {
   const el = document.getElementById(elId);
   if (!el) return;
   if (!o || o.value == null || o.error) { el.innerHTML = `● ${label} <span class="ds-warn">—</span>`; return; }
+  // explicit null check — `null >= 0` is true, so a missing change would show as a green +null%
+  if (o.pct == null) {
+    el.innerHTML = `● ${label} ${prefix || ''}${Number(o.value).toLocaleString('en-IN',{maximumFractionDigits:0})} <span class="ds-warn" title="No previous close published">—</span>`;
+    return;
+  }
   const up = o.pct >= 0;
   el.innerHTML = `● ${label} ${prefix || ''}${Number(o.value).toLocaleString('en-IN',{maximumFractionDigits:0})} <span class="${up?'up':'dn'}">${up?'+':''}${o.pct}%</span>`;
 }
@@ -5492,7 +5598,7 @@ function pfRender(j) {
   const palette = ['#2ea36b', '#6b9bd1', '#c9a35f', '#d0605a', '#7b6ea6', '#4da3ab', '#b06f95', '#b5764a', '#27865a', '#6e7681'];
   pfChart = new Chart(ctx, {
     type: 'doughnut',
-    data: { labels: j.sectors.map(s => s.sector), datasets: [{ data: j.sectors.map(s => s.weight), backgroundColor: j.sectors.map((_, i) => palette[i % palette.length]), borderColor: '#0a0d12', borderWidth: 2 }] },
+    data: { labels: j.sectors.map(s => s.sector), datasets: [{ data: j.sectors.map(s => s.weight), backgroundColor: j.sectors.map((_, i) => palette[i % palette.length]), borderColor: '#000000', borderWidth: 2 }] },
     options: { plugins: { legend: { position: 'bottom', labels: { color: '#94a0b0', font: { size: 11 }, boxWidth: 12, padding: 8 } } }, cutout: '60%' },
   });
 }
@@ -6207,7 +6313,7 @@ async function loadManagement(sym) {
     el.innerHTML = `<div class="mgmt-card">
       <div class="section-header" style="flex-wrap:wrap">
         <h2 style="font-size:1.1rem">${ic('user')} C-Suite &amp; Leadership Dashboard</h2>
-        <span class="ds-badge ds-live" style="vertical-align:middle">● LIVE · Yahoo Finance</span>
+        <span class="ds-badge ds-cache" style="vertical-align:middle">● PROFILE · Yahoo Finance</span>
         <span class="pf-note" style="margin-left:auto">${j.officers.length} key executives</span>
       </div>
       <div class="exec-grid">${cards}</div>
@@ -6861,7 +6967,7 @@ function paDonut(rows) {
     data: {
       labels: rows.map(r => r.sym),
       datasets: [{ data: rows.map(r => r.weight), backgroundColor: rows.map((_, i) => PA_COLORS[i % PA_COLORS.length]),
-        borderColor: '#10141a', borderWidth: 2 }],
+        borderColor: '#000000', borderWidth: 2 }],
     },
     options: {
       responsive: true, maintainAspectRatio: false, cutout: '58%',
@@ -7076,10 +7182,15 @@ function mmApplyData(data) {
   // with no IMF equivalent, which honestly stop at their last World Bank year), and blended
   // (actuals + clearly-marked estimates). Never just "LIVE" — none of this is intraday data.
   const estFrom = data.estimateFrom;
+  // The WEO vintage belongs on the badge, not just in the fine print. DBnomics mirrors the IMF
+  // with a lag — verified 28-Jul-2026, its newest edition was WEO:2025-04, so a "2026" figure
+  // is a projection made in April 2025. Showing the edition is the difference between an
+  // estimate a reader can weigh and one they mistake for a current measurement.
+  const vint = (data.weoVintage || '').replace(/^WEO:/, '');
   document.getElementById('macro-badge').textContent = data.curated
     ? `CURATED · ${data.source}`
     : estFrom
-      ? `WORLD BANK + IMF · ${data.years[0]}–${data.latestYear} · ${estFrom}+ EST`
+      ? `WORLD BANK + IMF · ${data.years[0]}–${data.latestYear} · ${estFrom}+ EST${vint ? ` (WEO ${vint})` : ''}`
       : `WORLD BANK · ANNUAL · ${data.years[0]}–${data.latestYear}`;
   const curAge = data.curated ? mmCuratedAge(data.updated) : null;
   const src = data.curated
@@ -7495,6 +7606,13 @@ function mmRenderRiskTicker() {
     }).join('') + stamp;
 }
 </script>
+
+<!-- Feedback — opens the Google Form in a new tab. rel="noopener noreferrer" so the opened
+     page gets no window.opener handle back into this one. -->
+<a class="fb-fab" href="https://forms.gle/AyHhmAHr1N7obBUg7" target="_blank"
+   rel="noopener noreferrer" title="Share a suggestion or report a problem">
+  <svg class="ico"><use href="#i-brief"/></svg><span>Feedback</span>
+</a>
 
 </body>
 </html>

@@ -1,0 +1,53 @@
+{
+ "meta": {
+  "symbol": "^CNXAUTO",
+  "currency": "INR",
+  "dataGranularity": "1d",
+  "regularMarketPrice": 27843.9,
+  "regularMarketTime": 1785232891,
+  "regularMarketDayHigh": 27916.85,
+  "regularMarketDayLow": 27559.2,
+  "chartPreviousClose": 27653.4,
+  "fiftyTwoWeekHigh": 27916.85,
+  "fiftyTwoWeekLow": 10092.6,
+  "regularMarketVolume": 0,
+  "exchangeTimezoneName": "Asia/Kolkata"
+ },
+ "timestamp": [
+  1785232891
+ ],
+ "indicators": {
+  "quote": [
+   {
+    "open": [
+     27604.30078125
+    ],
+    "high": [
+     27916.849609375
+    ],
+    "low": [
+     27559.19921875
+    ],
+    "close": [
+     27843.900390625
+    ],
+    "volume": [
+     0
+    ]
+   }
+  ],
+  "adjclose": [
+   {
+    "adjclose": [
+     27843.900390625
+    ]
+   }
+  ]
+ },
+ "events": {},
+ "_recorded": {
+  "at": "2026-07-28T10:49:41.397Z",
+  "source": "Yahoo Finance /v8/finance/chart",
+  "note": null
+ }
+}

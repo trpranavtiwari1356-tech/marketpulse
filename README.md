@@ -62,6 +62,16 @@ site keeps serving the last snapshot you pushed rather than showing an error.
 Committed snapshots are public market data only — no credentials. Don't pre-gzip them: git
 already zlib-packs each bhavcopy to ~64 KB and manual gzip would defeat delta compression.
 
+## Traffic stats (Cloudflare Web Analytics)
+Page-view counting is off unless the host sets `CF_BEACON_TOKEN` to the site token from
+Cloudflare's Web Analytics dashboard. When it's set, `server.js` injects the beacon `<script>`
+before `</body>` as the HTML is served; when it isn't, the page goes out byte-identical to the
+file on disk. That's deliberate — local and dev runs never pollute the stats, and the token
+isn't committed. Cookieless, so no consent banner is required.
+
+Note the beacon is a client-side script: adblockers suppress it, so treat the numbers as a
+floor on real traffic rather than an exact count.
+
 ## Refresh behaviour
 - **News** updates automatically (every 90s, only while you're on the News tab).
 - **Heatmap is manual on purpose** — it loads once when you first open the Trend tab, then only re-fetches when you click **↻ Refresh Live Data** or change a Time Frame / Universe pill. Switching tabs does not re-pull it.

@@ -6,6 +6,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "test": "node --test \"tests/*.test.js\"",
+    "test:unit": "node --test tests/calculations.test.js",
+    "test:api": "node --test tests/api-contract.test.js",
+    "record-fixtures": "node tests/record-fixtures.js",
     "refresh-data": "node refresh-data.js",
     "refresh-data:push": "node refresh-data.js --push"
   },

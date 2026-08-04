@@ -1,0 +1,81 @@
+{
+ "meta": {
+  "symbol": "^NSEI",
+  "currency": "INR",
+  "dataGranularity": "1d",
+  "regularMarketPrice": 23985.35,
+  "regularMarketTime": 1785232891,
+  "regularMarketDayHigh": 24041.15,
+  "regularMarketDayLow": 23954.6,
+  "chartPreviousClose": 23996.25,
+  "fiftyTwoWeekHigh": 26373.2,
+  "fiftyTwoWeekLow": 22182.55,
+  "regularMarketVolume": 0,
+  "exchangeTimezoneName": "Asia/Kolkata"
+ },
+ "timestamp": [
+  1784691900,
+  1784778300,
+  1784864700,
+  1785123900,
+  1785210300
+ ],
+ "indicators": {
+  "quote": [
+   {
+    "open": [
+     24150.44921875,
+     23904.80078125,
+     23666.349609375,
+     23928.400390625,
+     23971.25
+    ],
+    "high": [
+     24166.30078125,
+     23990.75,
+     23823.599609375,
+     24011.599609375,
+     24041.150390625
+    ],
+    "low": [
+     23961.400390625,
+     23807.19921875,
+     23606.30078125,
+     23891.55078125,
+     23954.599609375
+    ],
+    "close": [
+     23996.25,
+     23869.599609375,
+     23767.44921875,
+     23995.94921875,
+     23985.349609375
+    ],
+    "volume": [
+     304700,
+     344000,
+     333900,
+     319400,
+     0
+    ]
+   }
+  ],
+  "adjclose": [
+   {
+    "adjclose": [
+     23996.25,
+     23869.599609375,
+     23767.44921875,
+     23995.94921875,
+     23985.349609375
+    ]
+   }
+  ]
+ },
+ "events": {},
+ "_recorded": {
+  "at": "2026-07-28T10:49:41.613Z",
+  "source": "Yahoo Finance /v8/finance/chart",
+  "note": null
+ }
+}
