@@ -6427,13 +6427,20 @@ loadSymbols().then(initAutocomplete);
 renderMarketStatus();
 // Restore the tab from the URL on reload; if there's no (or a home) hash, stay on Home
 // but seed a '#home' history entry so the very first Back behaves consistently.
-if (location.hash && location.hash !== '#home') {
-  routeFromHash();
-} else {
-  history.replaceState({ page: 'home' }, '', '#home');
-  loadPulse();
-  loadWatch();
-}
+// Deferred by a microtask so the whole inline script finishes first: showPage() reads `let`
+// guards (macroLoaded, flowsLoaded, …) declared LOWER in this file, and calling it inline on a
+// deep-link load (e.g. opening/reloading …/#macro directly) would hit them in the temporal dead
+// zone — a ReferenceError that aborted init and left the page (the Macro map especially) blank.
+// The microtask runs after all declarations initialise but before paint, so there's no flash.
+queueMicrotask(() => {
+  if (location.hash && location.hash !== '#home') {
+    routeFromHash();
+  } else {
+    history.replaceState({ page: 'home' }, '', '#home');
+    loadPulse();
+    loadWatch();
+  }
+});
 setInterval(() => { renderMarketStatus(); updateStaleness(); }, 30000); // keep clock/badge + staleness current
 // heatmap is fetched when the Trend tab is opened (showPage -> renderHeatmap)
 

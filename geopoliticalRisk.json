@@ -1,6 +1,6 @@
 {
   "_comment": "MarketPulse geopolitical risk overlay — HAND-MAINTAINED, not a live feed. Edit this file and refresh the Macro page to update markers/shading/ticker. Statuses: Normal | Elevated | Disrupted (chokepoints), risk: low | medium | high (conflict/sanctions). Coordinates are [lat, lng]. Flow figures are approximate shares of GLOBAL seaborne oil/trade and should be reviewed against current sources (EIA, UNCTAD).",
-  "updated": "2026-07",
+  "updated": "2026-09",
   "chokepoints": [
     {
       "id": "hormuz",
@@ -8,12 +8,12 @@
       "short": "Hormuz",
       "lat": 26.57, "lng": 56.25,
       "type": "chokepoint",
-      "status": "Elevated",
+      "status": "Disrupted",
       "flowPercentage": 20,
-      "flowLabel": "~20% of global oil & most Gulf LNG",
-      "lastUpdated": "2026-07",
-      "note": "The world's most critical oil chokepoint — ~20 Mbbl/d of crude plus Qatari/UAE LNG transit the ~33 km-wide strait. No practical bypass for most Gulf exporters.",
-      "marketImpact": "India imports ~85% of its crude, a large share via Hormuz. A closure/disruption → Brent spike → OMC marketing-margin squeeze (watch IOC, BPCL, HPCL), fatter import bill → INR depreciation, wider current-account deficit and stickier CPI → pressure on RBI to hold/hike. Upstream names (ONGC, OIL) act as a partial hedge; paints, tyres, aviation (crude-linked input cost) are negatively geared."
+      "flowLabel": "~20% of global oil & most Gulf LNG — near-shut since mid-2026",
+      "lastUpdated": "2026-09",
+      "note": "The world's most critical oil chokepoint is effectively closed following the 2026 US-Iran war: transits have collapsed to a fraction of the ~85/day baseline amid repeated attacks on shipping, the seizure of the tanker Amara and a fatal strike on the Minoan Dignity after Iran's ceasefire lapsed. Saudi Arabia's East-West pipeline — the main overland bypass — was struck on 11 Sep and remains offline, leaving no fully open alternate corridor.",
+      "marketImpact": "India imports ~85% of its crude, a large share via Hormuz. With the strait now effectively shut, the tail risk has become the base case: Brent spike → OMC marketing-margin squeeze (watch IOC, BPCL, HPCL), fatter import bill → INR depreciation, wider current-account deficit and stickier CPI → pressure on RBI to hold/hike. Upstream names (ONGC, OIL) act as a partial hedge; paints, tyres, aviation (crude-linked input cost) are negatively geared."
     },
     {
       "id": "malacca",
@@ -24,8 +24,8 @@
       "status": "Normal",
       "flowPercentage": 25,
       "flowLabel": "~25% of world seaborne trade, ~16 Mbbl/d oil",
-      "lastUpdated": "2026-07",
-      "note": "Primary artery linking the Indian Ocean to the Pacific — most Gulf crude bound for China, Japan and Korea passes here, as does a large slice of India's east-bound trade.",
+      "lastUpdated": "2026-09",
+      "note": "Primary artery linking the Indian Ocean to the Pacific — most Gulf crude bound for China, Japan and Korea passes here, as does a large slice of India's east-bound trade. Open and operating normally (the littoral states — Indonesia, Malaysia, Singapore — have reaffirmed free passage), but now under heightened scrutiny as the main chokepoint absorbing traffic rerouted away from a shut Hormuz.",
       "marketImpact": "A blockage reroutes shipping around Indonesia (Lombok/Sunda), lifting freight and insurance costs → costlier imports and squeezed margins for Indian exporters and importers alike. Broadly risk-off for trade-geared sectors; container/logistics rates spike."
     },
     {
@@ -37,8 +37,8 @@
       "status": "Disrupted",
       "flowPercentage": 12,
       "flowLabel": "~10-12% of seaborne oil; gateway to Suez",
-      "lastUpdated": "2026-07",
-      "note": "Southern gate of the Red Sea / Suez corridor. Persistent attacks on shipping have pushed many carriers onto the Cape of Good Hope detour (+10-14 days).",
+      "lastUpdated": "2026-09",
+      "note": "Southern gate of the Red Sea / Suez corridor. A Sep 2026 Houthi offensive down Yemen's Red Sea coast captured the port of Mokha and Perim Island inside the strait itself, handing a non-state group territorial leverage over the chokepoint. Maersk and Hapag-Lloyd have paused transits, pushing carriers onto the Cape of Good Hope detour (+10-14 days).",
       "marketImpact": "Directly hits India-Europe trade lanes: longer transit and elevated freight/insurance raise costs for exporters of textiles, chemicals, engineering goods and pharma to Europe, and delay inbound cargo. Container freight indices spike; shipping/logistics names see volatile pricing."
     },
     {
@@ -50,8 +50,8 @@
       "status": "Elevated",
       "flowPercentage": 12,
       "flowLabel": "~12% of global trade, ~9% of seaborne oil",
-      "lastUpdated": "2026-07",
-      "note": "The Europe-Asia shortcut. Traffic is sensitive to Red Sea / Bab-el-Mandeb security downstream; diversions cut effective throughput.",
+      "lastUpdated": "2026-09",
+      "note": "The Europe-Asia shortcut. Effective throughput is deeply cut as the Bab-el-Mandeb gateway downstream deteriorates — with major carriers pausing Red Sea transits in Sep 2026, much Europe-Asia cargo is again routing around the Cape.",
       "marketImpact": "Reduced Suez transit lengthens Europe-Asia voyages and raises freight for Indian export sectors selling into Europe. Knock-on to global supply chains and input costs; watch export-heavy engineering, textiles and specialty chemicals."
     },
     {
@@ -60,11 +60,11 @@
       "short": "Panama",
       "lat": 9.08, "lng": -79.68,
       "type": "chokepoint",
-      "status": "Normal",
+      "status": "Elevated",
       "flowPercentage": 5,
       "flowLabel": "~5% of global maritime trade",
-      "lastUpdated": "2026-07",
-      "note": "Key Atlantic-Pacific link for US grain, LPG/LNG and container flows; throughput is drought-sensitive due to freshwater lock operation.",
+      "lastUpdated": "2026-09",
+      "note": "Key Atlantic-Pacific link for US grain, LPG/LNG and container flows; throughput is drought-sensitive due to freshwater lock operation. A renewed El Niño drought has forced fresh capacity cuts — daily transits stepped down from 36 to 34 (3 Sep) to 32 (15 Sep) with tighter draft limits, as watershed inflows ran ~44% below average.",
       "marketImpact": "Limited DIRECT India exposure. Matters indirectly via US-Asia LPG/LNG and container rates — sustained restrictions can nudge global gas and freight prices, a second-order input for Indian importers."
     }
   ],
@@ -76,8 +76,8 @@
       "lat": 48.4, "lng": 33.0, "radius": 9,
       "type": "conflict",
       "risk": "high",
-      "lastUpdated": "2026-07",
-      "note": "Ongoing war disrupting Black Sea grain/fertiliser and European energy flows.",
+      "lastUpdated": "2026-09",
+      "note": "Now a battlefield stalemate with long-range strikes on both capitals, running alongside the most serious peace push in years — US envoys (Witkoff, Kushner) shuttling between Moscow and Kyiv and short truces attempted, though no durable ceasefire has held. Still disrupts Black Sea grain/fertiliser and European energy flows.",
       "marketImpact": "Sunflower oil, fertiliser and wheat supply shocks feed India's food-inflation and input costs (fertiliser subsidy, agri-input names). Energy-price volatility supports discounted-Russian-crude flows to Indian refiners."
     },
     {
@@ -87,9 +87,20 @@
       "lat": 31.5, "lng": 34.8, "radius": 5,
       "type": "conflict",
       "risk": "high",
-      "lastUpdated": "2026-07",
-      "note": "Regional conflict with escalation risk to Gulf shipping and oil infrastructure.",
-      "marketImpact": "Escalation toward Hormuz/Gulf producers is the key tail risk for Indian markets via the crude-price channel (see Strait of Hormuz). Gold catches a safe-haven bid."
+      "lastUpdated": "2026-09",
+      "note": "A fragile de jure Gaza ceasefire has held on paper since Oct 2025 but a de facto low-intensity war continues, set against the far larger 2026 US-Iran war that has already spilled into Gulf shipping and oil infrastructure.",
+      "marketImpact": "The escalation-toward-Hormuz tail risk has now materialised (see Strait of Hormuz) — the crude-price channel is the dominant transmission to Indian markets. Gold catches a strong safe-haven bid."
+    },
+    {
+      "id": "lebanon",
+      "name": "Israel-Hezbollah / Lebanon",
+      "short": "Lebanon",
+      "lat": 33.8, "lng": 35.5, "radius": 4,
+      "type": "conflict",
+      "risk": "high",
+      "lastUpdated": "2026-09",
+      "note": "War between Israel and Hezbollah since Mar 2026 (opened after the US-Iran war and the killing of Hezbollah's leader); a de jure ceasefire since 16 Apr 2026 remains fragile, with Israeli operations continuing into September. 4,000+ killed and over 1 million displaced.",
+      "marketImpact": "Primarily a regional-escalation and crude-risk channel for India rather than a direct trade link — a wider Israel-Iran-Hezbollah flare-up reinforces the Gulf oil-supply premium (see Strait of Hormuz) and supports gold."
     },
     {
       "id": "yemen",
@@ -98,8 +109,8 @@
       "lat": 15.5, "lng": 44.2, "radius": 5,
       "type": "conflict",
       "risk": "high",
-      "lastUpdated": "2026-07",
-      "note": "Attacks on Red Sea shipping driving the Bab-el-Mandeb disruption.",
+      "lastUpdated": "2026-09",
+      "note": "A Sep 2026 Houthi ground offensive down Yemen's Red Sea coast took Mokha and Perim Island, escalating the Bab-el-Mandeb disruption from missile/drone attacks to territorial control of the strait.",
       "marketImpact": "See Bab-el-Mandeb — elevated freight/insurance on India-Europe lanes."
     },
     {
@@ -109,7 +120,7 @@
       "lat": 15.5, "lng": 30.5, "radius": 6,
       "type": "conflict",
       "risk": "medium",
-      "lastUpdated": "2026-07",
+      "lastUpdated": "2026-09",
       "note": "Civil war with humanitarian and regional-stability spillover; gum arabic supply risk.",
       "marketImpact": "Sudan supplies a majority of world gum arabic (a food/beverage stabiliser input); disruption is a niche input-cost risk for FMCG. Limited direct Indian market impact otherwise."
     },
@@ -120,19 +131,19 @@
       "lat": 15.0, "lng": 0.0, "radius": 8,
       "type": "conflict",
       "risk": "medium",
-      "lastUpdated": "2026-07",
+      "lastUpdated": "2026-09",
       "note": "Coups and insurgency across Mali/Niger/Burkina Faso; uranium and gold supply relevance.",
       "marketImpact": "Niger is a notable uranium supplier; regional gold output is meaningful. Mostly a global-commodity tail risk, minor direct Indian exposure."
     }
   ],
   "sanctions": [
-    { "iso3": "RUS", "name": "Russia", "regime": "Comprehensive (US/EU/UK)", "risk": "high", "lastUpdated": "2026-07", "note": "Energy, finance and tech sanctions. Indirectly benefits Indian refiners via discounted crude; complicates payments/insurance." },
-    { "iso3": "IRN", "name": "Iran", "regime": "Comprehensive (US)", "risk": "high", "lastUpdated": "2026-07", "note": "Oil-export sanctions; a key swing factor for Gulf tension and crude prices that flow through to India." },
-    { "iso3": "PRK", "name": "North Korea", "regime": "Comprehensive (UN)", "risk": "high", "lastUpdated": "2026-07", "note": "Broad UN sanctions; negligible direct Indian trade exposure." },
-    { "iso3": "VEN", "name": "Venezuela", "regime": "Oil-sector (US)", "risk": "medium", "lastUpdated": "2026-07", "note": "Heavy-crude export sanctions; marginal effect on global heavy-crude availability for complex refiners." },
-    { "iso3": "SYR", "name": "Syria", "regime": "Comprehensive (US/EU)", "risk": "medium", "lastUpdated": "2026-07", "note": "Broad sanctions; negligible direct Indian market impact." },
-    { "iso3": "MMR", "name": "Myanmar", "regime": "Targeted (US/EU/UK)", "risk": "medium", "lastUpdated": "2026-07", "note": "Targeted sanctions post-coup; some India border-trade and gas-import relevance." },
-    { "iso3": "BLR", "name": "Belarus", "regime": "Targeted (US/EU/UK)", "risk": "medium", "lastUpdated": "2026-07", "note": "Potash-export sanctions tighten global fertiliser supply — an input-cost channel for Indian agri." },
-    { "iso3": "CUB", "name": "Cuba", "regime": "Embargo (US)", "risk": "low", "lastUpdated": "2026-07", "note": "Long-standing US embargo; negligible Indian exposure." }
+    { "iso3": "RUS", "name": "Russia", "regime": "Comprehensive (US/EU/UK)", "risk": "high", "lastUpdated": "2026-09", "note": "Energy, finance and tech sanctions. Indirectly benefits Indian refiners via discounted crude; complicates payments/insurance." },
+    { "iso3": "IRN", "name": "Iran", "regime": "Comprehensive (US)", "risk": "high", "lastUpdated": "2026-09", "note": "Oil-export sanctions tightened further after the 2026 US-Iran war; with Hormuz effectively shut, Iran is the central swing factor for Gulf tension and crude prices flowing through to India." },
+    { "iso3": "PRK", "name": "North Korea", "regime": "Comprehensive (UN)", "risk": "high", "lastUpdated": "2026-09", "note": "Broad UN sanctions; negligible direct Indian trade exposure." },
+    { "iso3": "VEN", "name": "Venezuela", "regime": "Oil-sector (US)", "risk": "medium", "lastUpdated": "2026-09", "note": "Heavy-crude export sanctions; marginal effect on global heavy-crude availability for complex refiners." },
+    { "iso3": "SYR", "name": "Syria", "regime": "Comprehensive (US/EU)", "risk": "medium", "lastUpdated": "2026-09", "note": "Broad sanctions; negligible direct Indian market impact." },
+    { "iso3": "MMR", "name": "Myanmar", "regime": "Targeted (US/EU/UK)", "risk": "medium", "lastUpdated": "2026-09", "note": "Targeted sanctions post-coup; some India border-trade and gas-import relevance." },
+    { "iso3": "BLR", "name": "Belarus", "regime": "Targeted (US/EU/UK)", "risk": "medium", "lastUpdated": "2026-09", "note": "Potash-export sanctions tighten global fertiliser supply — an input-cost channel for Indian agri." },
+    { "iso3": "CUB", "name": "Cuba", "regime": "Embargo (US)", "risk": "low", "lastUpdated": "2026-09", "note": "Long-standing US embargo; negligible Indian exposure." }
   ]
 }
