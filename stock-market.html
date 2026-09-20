@@ -7086,6 +7086,29 @@ async function mmRefresh() {
   }
 }
 
+// The world geometry is served from the committed disk cache, so a failure here is almost
+// always a transient FIRST-LOAD hiccup on the live site: the Render free-tier dyno was asleep
+// and the request landed mid-boot, or the d3 CDN script hadn't finished loading yet. The old
+// code did ONE fetch with no retry, so a single hiccup left the map blank until a hard reload
+// (localhost never sleeps, which is why it only ever failed live). Retry with backoff, and
+// wait for d3 to be ready, before giving up.
+async function mmFetchGeo() {
+  let lastErr;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      // d3 loads from a CDN <script> in <head>; on a slow network the inline code can run first.
+      if (typeof d3 === 'undefined') throw new Error('map library still loading');
+      const r = await fetch('/api/macro-geo');
+      const j = await r.json();
+      if (r.ok && !j.error) return j;
+      lastErr = new Error(j.error || ('HTTP ' + r.status));
+    } catch (e) { lastErr = e; }
+    // 1.5s → 3s → 4.5s … covers a typical cold boot without hanging the tab indefinitely.
+    await new Promise(s => setTimeout(s, 1500 * (attempt + 1)));
+  }
+  throw lastErr || new Error('world geometry unavailable');
+}
+
 async function macroInit() {
   mmRenderTabs();
   document.getElementById('macro-region').innerHTML =
@@ -7093,14 +7116,18 @@ async function macroInit() {
   // Draw the map from geometry FIRST, independently of the data fetch — a slow or failed
   // indicator call must never leave the page blank (that was the original hang symptom).
   try {
-    const geo = await fetch('/api/macro-geo').then(r => r.json());
+    const geo = await mmFetchGeo();   // retries through a Render cold-start / d3 CDN hiccup
     if (geo.error) throw new Error(geo.error);
     MM.geo = geo;
     for (const f of geo.features) if (f.id) MM.names[f.id] = (f.properties || {}).name || f.id;
     mmBuildMap();
   } catch (e) {
+    // A failed first load must NOT wedge the tab: the guard was flipped true before we ran, so
+    // without this the map stays blank until a full page reload. Clear it so simply re-opening
+    // Macro (or the Retry button) tries again — by then the free-tier dyno is usually warm.
+    macroLoaded = false;
     document.getElementById('macro-rank').innerHTML =
-      `<div class="macro-msg">Could not load the world map.<br>${e.message}<br><button onclick="macroLoaded=true;macroInit()">Retry</button></div>`;
+      `<div class="macro-msg">Could not load the world map.<br>${e.message}<br><button onclick="showPage('macro')">Retry</button></div>`;
     return;
   }
   // Geopolitical overlay + risk ticker load in parallel; failure here must not block the map.
