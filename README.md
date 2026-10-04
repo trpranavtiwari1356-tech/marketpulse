@@ -123,3 +123,23 @@ breaking news. Same for `macroCurated.json`'s `updated` field on the Macro tab.
 ## Tickers
 The universe uses NSE symbols (`.NS`). Occasionally Yahoo drops one (shown as "no data: …");
 that's surfaced explicitly rather than hidden.
+
+## Visitor analytics, accounts & the admin dashboard
+`/admin` is a private dashboard: people online now, visitors today/yesterday/7d/30d/all-time,
+a 30-day daily chart, time spent per visit and per visitor, pages opened, approximate location
+(from IP), device/browser, where they came from, and the list of signed-up accounts.
+Visitors can optionally create an account (name + email + password, scrypt-hashed) from the
+**Sign in** button in the nav; their visits then show with their name.
+
+Set these environment variables on the host (Render → your service → Environment):
+
+| Variable | What it is |
+|---|---|
+| `ADMIN_PASSWORD` | Password for `/admin`. Without it, `/admin` only opens on localhost. |
+| `SUPABASE_URL` | Supabase project URL (Project Settings → API). |
+| `SUPABASE_SERVICE_KEY` | Supabase **secret / service_role** key — server-only, never put it in the HTML. |
+| `SESSION_SECRET` | Optional. Any long random string; otherwise derived from `ADMIN_PASSWORD`. |
+
+Create the tables once by running `supabase-setup.sql` in Supabase's SQL editor. Without
+Supabase the data goes to `.data/visitors.json`, which is fine locally but wiped on every
+Render restart.

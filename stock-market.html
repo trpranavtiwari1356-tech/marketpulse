@@ -464,6 +464,42 @@
   }
   @media print { .fb-fab { display: none; } }
 
+  /* ===== ACCOUNT (sign in / sign up) ===== */
+  .acct-btn { flex-shrink: 0; display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+    padding: 4px 12px 4px 4px; border-radius: 999px; font: 600 .8rem Inter, sans-serif;
+    background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    transition: border-color .18s, background .18s; }
+  .acct-btn:hover { border-color: var(--accent); background: rgba(107,155,209,.14); }
+  .acct-av { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+    background: rgba(107,155,209,.22); color: var(--accent); font-size: .72rem; font-weight: 800; }
+  .acct-av .ico { width: 15px; height: 15px; }
+  #acct-label { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @media (max-width: 760px) { .acct-btn { padding: 4px; } #acct-label { display: none; } }
+  .acct-modal { position: fixed; inset: 0; z-index: 1200; display: none; place-items: center;
+    background: rgba(0,0,0,.6); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); padding: 16px; }
+  .acct-modal.open { display: grid; }
+  .acct-card { width: 100%; max-width: 380px; box-sizing: border-box; background: var(--solid);
+    border: 1px solid var(--border); border-radius: 16px; padding: 22px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.6); position: relative; }
+  .acct-card h3 { margin: 0 0 4px; font-size: 1.1rem; }
+  .acct-sub { color: var(--muted); font-size: .8rem; margin: 0 0 16px; }
+  .acct-tabs { display: flex; gap: 4px; background: var(--surface2); border-radius: 10px; padding: 3px; margin-bottom: 14px; }
+  .acct-tabs button { flex: 1; border: 0; border-radius: 8px; padding: 7px; cursor: pointer;
+    background: transparent; color: var(--muted); font: 600 .82rem Inter, sans-serif; }
+  .acct-tabs button.on { background: var(--accent); color: #fff; }
+  .acct-card label { display: block; font-size: .74rem; color: var(--muted); margin: 10px 0 4px; }
+  .acct-card input { width: 100%; box-sizing: border-box; padding: 9px 11px; border-radius: 9px;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text); font: .88rem Inter, sans-serif; }
+  .acct-card input:focus { border-color: var(--accent); outline: none; }
+  .acct-go { width: 100%; margin-top: 16px; padding: 10px; border: 0; border-radius: 10px; cursor: pointer;
+    background: var(--accent); color: #fff; font: 700 .88rem Inter, sans-serif; }
+  .acct-go:disabled { opacity: .6; cursor: default; }
+  .acct-go.ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .acct-err { color: var(--red); font-size: .78rem; min-height: 1.1em; margin-top: 10px; }
+  .acct-note { color: var(--muted); font-size: .7rem; line-height: 1.45; margin-top: 14px; }
+  .acct-x { position: absolute; top: 12px; right: 14px; background: none; border: 0; color: var(--muted);
+    font-size: 1.3rem; cursor: pointer; line-height: 1; }
+
   /* ===== TradingView-style autocomplete ===== */
   .ac-wrap { position: relative; }
   .ac-dropdown {
@@ -1685,6 +1721,9 @@
     <div class="market-pill tv-clickable" id="nav-banknifty" onclick="openTvChart('nav-banknifty')" title="Open candlestick chart">● BANKNIFTY <span class="ds-meta">…</span></div>
     <div class="market-pill tv-clickable" id="nav-gold" onclick="openTvChart('nav-gold')" title="Indicative ₹/10g domestic gold (COMEX × USD/INR + duty) — reference only, not the live MCX tick. Click for chart.">● GOLD <span class="ds-meta">…</span></div>
   </div>
+  <button class="acct-btn" id="acct-btn" onclick="acctOpen()" title="Sign in or create an account">
+    <span class="acct-av" id="acct-av"><svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="8.5" r="3.6"/><path d="M4.8 19.5c1.3-3.3 4-5 7.2-5s5.9 1.7 7.2 5"/></svg></span><span id="acct-label">Sign in</span>
+  </button>
 </nav>
 
 <!-- ====== TRADINGVIEW FULL-CHART MODAL (nav-pill click) ====== -->
@@ -3025,6 +3064,7 @@ function showPage(id, opts) {
 
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
+  if (window.mpTrack) mpTrack.page(id);   // visitor analytics: which tabs get used
   document.querySelectorAll('.nav-tab').forEach((t,i) => {
     const pages = ['home','trend','news','info','sentiment','portfolio','flows','macro','sizing'];
     t.classList.toggle('active', pages[i] === id);
@@ -7647,6 +7687,141 @@ function mmRenderRiskTicker() {
    rel="noopener noreferrer" title="Share a suggestion or report a problem">
   <svg class="ico"><use href="#i-brief"/></svg><span>Feedback</span>
 </a>
+
+<!-- ====== ACCOUNT MODAL ====== -->
+<div class="acct-modal" id="acct-modal" onclick="if(event.target===this)acctClose()">
+  <div class="acct-card" role="dialog" aria-modal="true" aria-labelledby="acct-title">
+    <button class="acct-x" onclick="acctClose()" aria-label="Close">&times;</button>
+    <div id="acct-form-view">
+      <h3 id="acct-title">Welcome to MarketPulse</h3>
+      <p class="acct-sub">Optional — the whole dashboard works without an account.</p>
+      <div class="acct-tabs">
+        <button type="button" id="acct-t-login" class="on" onclick="acctMode('login')">Sign in</button>
+        <button type="button" id="acct-t-signup" onclick="acctMode('signup')">Create account</button>
+      </div>
+      <form onsubmit="acctSubmit(event)">
+        <div id="acct-name-row" style="display:none">
+          <label for="acct-name">Name</label>
+          <input id="acct-name" autocomplete="name" maxlength="60">
+        </div>
+        <label for="acct-email">Email</label>
+        <input id="acct-email" type="email" autocomplete="email" required maxlength="254">
+        <label for="acct-pass">Password</label>
+        <input id="acct-pass" type="password" autocomplete="current-password" required minlength="8" maxlength="128">
+        <button class="acct-go" id="acct-go" type="submit">Sign in</button>
+        <div class="acct-err" id="acct-err" role="alert"></div>
+      </form>
+      <div class="acct-note">Privacy: MarketPulse records basic usage to improve the site — pages opened, time spent, approximate location from your IP address, and device/browser type. If you create an account, your name and email are linked to that usage. Passwords are stored only as a secure hash.</div>
+    </div>
+    <div id="acct-me-view" style="display:none">
+      <h3>Signed in</h3>
+      <p class="acct-sub" id="acct-me-text"></p>
+      <button class="acct-go ghost" onclick="acctLogout()">Sign out</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ====== ACCOUNT ======
+let acctUser = null, acctModeNow = 'login';
+const ACCT_ICON = '<svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="8.5" r="3.6"/><path d="M4.8 19.5c1.3-3.3 4-5 7.2-5s5.9 1.7 7.2 5"/></svg>';
+function acctRender() {
+  const lab = document.getElementById('acct-label'), av = document.getElementById('acct-av'), btn = document.getElementById('acct-btn');
+  if (acctUser) {
+    lab.textContent = acctUser.name.split(' ')[0];
+    av.textContent = acctUser.name.trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+    btn.title = 'Signed in as ' + acctUser.email;
+  } else {
+    lab.textContent = 'Sign in'; av.innerHTML = ACCT_ICON; btn.title = 'Sign in or create an account';
+  }
+}
+function acctOpen() {
+  document.getElementById('acct-form-view').style.display = acctUser ? 'none' : '';
+  document.getElementById('acct-me-view').style.display = acctUser ? '' : 'none';
+  if (acctUser) document.getElementById('acct-me-text').textContent = acctUser.name + ' · ' + acctUser.email;
+  document.getElementById('acct-err').textContent = '';
+  document.getElementById('acct-modal').classList.add('open');
+  if (!acctUser) setTimeout(() => document.getElementById(acctModeNow === 'signup' ? 'acct-name' : 'acct-email').focus(), 30);
+}
+function acctClose() { document.getElementById('acct-modal').classList.remove('open'); }
+function acctMode(m) {
+  acctModeNow = m;
+  document.getElementById('acct-t-login').classList.toggle('on', m === 'login');
+  document.getElementById('acct-t-signup').classList.toggle('on', m === 'signup');
+  document.getElementById('acct-name-row').style.display = m === 'signup' ? '' : 'none';
+  document.getElementById('acct-name').required = m === 'signup';
+  document.getElementById('acct-go').textContent = m === 'signup' ? 'Create account' : 'Sign in';
+  document.getElementById('acct-pass').autocomplete = m === 'signup' ? 'new-password' : 'current-password';
+  document.getElementById('acct-err').textContent = '';
+}
+async function acctSubmit(ev) {
+  ev.preventDefault();
+  const go = document.getElementById('acct-go'), err = document.getElementById('acct-err');
+  const body = { email: document.getElementById('acct-email').value, password: document.getElementById('acct-pass').value };
+  if (acctModeNow === 'signup') body.name = document.getElementById('acct-name').value;
+  go.disabled = true; err.textContent = '';
+  try {
+    const r = await fetch('/api/auth/' + acctModeNow, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { err.textContent = j.error || 'Something went wrong.'; return; }
+    acctUser = j.user; acctRender(); acctClose();
+    document.getElementById('acct-pass').value = '';
+    if (window.mpTrack) mpTrack.ping();   // attach the name to this visit right away
+  } catch { err.textContent = 'Network error — try again.'; }
+  finally { go.disabled = false; }
+}
+async function acctLogout() {
+  await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  acctUser = null; acctRender(); acctClose();
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') acctClose(); });
+fetch('/api/auth/me').then(r => r.json()).then(j => { acctUser = j.user; acctRender(); }).catch(() => {});
+
+// ====== VISITOR ANALYTICS ======
+// Counts visits and ACTIVE time (tab visible + some input in the last 5 min) and sends the running
+// totals to /api/t every 30s. The browser owns the totals, so a server restart loses nothing.
+window.mpTrack = (function () {
+  const rid = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '')
+    : Math.random().toString(36).slice(2) + Date.now().toString(36));
+  const get = (st, k) => { try { return st.getItem(k); } catch { return null; } };
+  const set = (st, k, v) => { try { st.setItem(k, v); } catch {} };
+  let vid = get(localStorage, 'mp_vid');
+  if (!vid) { vid = rid(); set(localStorage, 'mp_vid', vid); }
+  // A session survives reloads in the same tab, but ends after 30 min of silence.
+  let S = null;
+  try { S = JSON.parse(get(sessionStorage, 'mp_sess') || 'null'); } catch {}
+  if (!S || Date.now() - (S.last || 0) > 30 * 60e3) S = { sid: rid(), t0: Date.now(), active: 0, pages: [] };
+  const save = () => { S.last = Date.now(); set(sessionStorage, 'mp_sess', JSON.stringify(S)); };
+  let lastInput = Date.now();
+  ['pointermove', 'keydown', 'scroll', 'touchstart', 'click'].forEach(ev =>
+    addEventListener(ev, () => { lastInput = Date.now(); }, { passive: true, capture: true }));
+  setInterval(() => {
+    if (document.visibilityState === 'visible' && Date.now() - lastInput < 5 * 60e3) { S.active += 5; save(); }
+  }, 5000);
+  const payload = () => JSON.stringify({ sid: S.sid, vid, t0: S.t0, active: S.active, pages: S.pages,
+    ref: document.referrer || '', screen: screen.width + 'x' + screen.height, lang: navigator.language,
+    tz: (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || '' });
+  let sentActive = -1;
+  function ping(force) {
+    if (!force && S.active === sentActive) return;
+    sentActive = S.active; save();
+    fetch('/api/t', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload(), keepalive: true }).catch(() => {});
+  }
+  setInterval(() => ping(false), 30000);
+  addEventListener('pagehide', () => {
+    save();
+    if (navigator.sendBeacon) navigator.sendBeacon('/api/t', new Blob([payload()], { type: 'application/json' }));
+  });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') ping(false); });
+  const first = (location.hash || '#home').slice(1);
+  if (/^[a-z]{1,20}$/.test(first) && !S.pages.includes(first)) S.pages.push(first);
+  setTimeout(() => ping(true), 1500);
+  return {
+    page(id) { if (/^[a-z]{1,20}$/.test(id) && !S.pages.includes(id)) { S.pages.push(id); save(); ping(true); } },
+    ping: () => ping(true),
+  };
+})();
+</script>
 
 </body>
 </html>

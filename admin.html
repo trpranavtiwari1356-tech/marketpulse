@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>MarketPulse Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #000; --surface: rgba(255,255,255,.045); --surface2: rgba(255,255,255,.085); --solid: #0b0d10;
+    --border: rgba(255,255,255,.11); --accent: #6b9bd1; --gold: #c9a35f; --red: #d0605a; --green: #2ea36b;
+    --text: #e7eaf0; --muted: #94a0b0; --grid: rgba(255,255,255,.07);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 Inter, system-ui, sans-serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 60px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  .logo { font-size: 1.25rem; font-weight: 800; letter-spacing: -.4px; }
+  .logo span { color: var(--gold); } .logo small { color: var(--muted); font-weight: 600; font-size: .8rem; margin-left: 6px; }
+  .grow { flex: 1; }
+  .meta { color: var(--muted); font-size: .78rem; }
+  .btn { border: 1px solid var(--border); background: var(--surface2); color: var(--text); border-radius: 9px;
+    padding: 7px 13px; font: 600 .8rem Inter, sans-serif; cursor: pointer; }
+  .btn:hover { border-color: var(--accent); }
+  .warn { background: rgba(201,163,95,.12); border: 1px solid rgba(201,163,95,.45); color: var(--gold);
+    border-radius: 10px; padding: 10px 14px; font-size: .82rem; margin-bottom: 16px; }
+  .err { background: rgba(208,96,90,.12); border: 1px solid rgba(208,96,90,.45); color: var(--red);
+    border-radius: 10px; padding: 10px 14px; font-size: .82rem; margin-bottom: 16px; }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 13px 15px; }
+  .kpi .l { color: var(--muted); font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .kpi .v { font-size: 1.65rem; font-weight: 800; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .kpi .s { color: var(--muted); font-size: .74rem; }
+  .kpi.live .v { color: var(--green); }
+  .kpi.live .l::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green); margin-right: 6px; vertical-align: 1px; animation: pulse 1.6s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: .95rem; margin: 0 0 2px; }
+  .card .sub { color: var(--muted); font-size: .76rem; margin-bottom: 12px; }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: 220px; }
+  .tip { position: absolute; pointer-events: none; background: var(--solid); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 10px; font-size: .76rem; white-space: nowrap; display: none; z-index: 5;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  .tip b { font-variant-numeric: tabular-nums; }
+
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tabs button { border: 1px solid var(--border); background: transparent; color: var(--muted); border-radius: 8px;
+    padding: 6px 12px; font: 600 .8rem Inter, sans-serif; cursor: pointer; }
+  .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tabs .cnt { opacity: .75; font-weight: 500; margin-left: 4px; }
+  .search { margin-left: auto; background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 6px 10px; font: .8rem Inter, sans-serif; min-width: 180px; }
+  .tbl { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; font-variant-numeric: tabular-nums; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: .72rem; text-transform: uppercase;
+    letter-spacing: .03em; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.05); vertical-align: top; }
+  tr:hover td { background: rgba(255,255,255,.03); }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .who b { display: block; } .who span { color: var(--muted); font-size: .72rem; }
+  .anon { color: var(--muted); font-family: ui-monospace, monospace; font-size: .74rem; }
+  .chip { display: inline-block; background: var(--surface2); border-radius: 5px; padding: 1px 6px; margin: 1px 2px 1px 0; font-size: .7rem; color: var(--muted); }
+  .dim { color: var(--muted); }
+  .empty { color: var(--muted); padding: 18px 10px; text-align: center; }
+
+  .login { max-width: 360px; margin: 12vh auto 0; background: var(--solid); border: 1px solid var(--border);
+    border-radius: 16px; padding: 24px; }
+  .login h1 { font-size: 1.15rem; margin: 0 0 4px; }
+  .login p { color: var(--muted); font-size: .8rem; margin: 0 0 14px; }
+  .login input { width: 100%; padding: 10px 12px; border-radius: 9px; background: var(--surface2);
+    border: 1px solid var(--border); color: var(--text); font: .9rem Inter, sans-serif; }
+  .login button { width: 100%; margin-top: 12px; padding: 10px; border: 0; border-radius: 10px;
+    background: var(--accent); color: #fff; font: 700 .88rem Inter, sans-serif; cursor: pointer; }
+  .login .e { color: var(--red); font-size: .78rem; min-height: 1.1em; margin-top: 10px; }
+  @media (max-width: 620px) { .search { margin-left: 0; width: 100%; } .kpi .v { font-size: 1.35rem; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div id="login-view" style="display:none">
+    <form class="login" onsubmit="adminLogin(event)">
+      <h1>Market<span style="color:var(--gold)">Pulse</span> Admin</h1>
+      <p id="login-hint">Enter the admin password.</p>
+      <input id="pw" type="password" autocomplete="current-password" placeholder="Admin password" required>
+      <button type="submit">Sign in</button>
+      <div class="e" id="login-err" role="alert"></div>
+    </form>
+  </div>
+
+  <div id="dash" style="display:none">
+    <header>
+      <div class="logo">Market<span>Pulse</span><small>Admin</small></div>
+      <div class="grow"></div>
+      <span class="meta" id="updated"></span>
+      <button class="btn" onclick="load()">Refresh</button>
+      <a class="btn" href="/" style="text-decoration:none">Open site</a>
+      <button class="btn" onclick="adminLogout()">Sign out</button>
+    </header>
+    <div id="banner"></div>
+    <div class="kpis" id="kpis"></div>
+
+    <div class="card">
+      <h2>Daily visitors — last 30 days</h2>
+      <div class="sub">Unique visitors per day (India time). Hover a bar for visits and average time.</div>
+      <div class="chart" id="chart"><svg id="chart-svg" role="img" aria-label="Daily unique visitors, last 30 days"></svg><div class="tip" id="tip"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="tabs" id="tabs">
+        <button data-t="online" class="on">Online now<span class="cnt" id="c-online"></span></button>
+        <button data-t="visitors">Visitors<span class="cnt" id="c-visitors"></span></button>
+        <button data-t="recent">Recent visits<span class="cnt" id="c-recent"></span></button>
+        <button data-t="users">Accounts<span class="cnt" id="c-users"></span></button>
+        <input class="search" id="q" placeholder="Filter by name, city, device…" oninput="renderTable()">
+      </div>
+      <div class="tbl" id="table"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let DATA = null, TAB = 'online';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtNum = n => (n || 0).toLocaleString('en-IN');
+function fmtDur(sec) {
+  sec = Math.round(sec || 0);
+  if (sec < 60) return sec + 's';
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h}h ${m}m` : `${m}m ${String(s).padStart(2, '0')}s`;
+}
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso), now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  return d.toLocaleString('en-IN', sameDay ? { hour: '2-digit', minute: '2-digit' }
+    : { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+function ago(iso) {
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  return s < 60 ? 'just now' : s < 3600 ? Math.floor(s / 60) + ' min ago' : s < 86400 ? Math.floor(s / 3600) + ' h ago' : Math.floor(s / 86400) + ' d ago';
+}
+const place = r => [r.city, r.region, r.country].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(', ') || '—';
+const devc = r => [r.device, r.os, r.browser].filter(Boolean).join(' · ') || '—';
+const who = r => r.user_name || r.name
+  ? `<div class="who"><b>${esc(r.user_name || r.name)}</b><span>${esc(r.user_email || r.email || '')}</span></div>`
+  : `<span class="anon" title="Anonymous visitor ID">Anon · ${esc((r.visitor_id || '').slice(0, 8))}</span>`;
+const pages = p => (Array.isArray(p) ? p : []).map(x => `<span class="chip">${esc(x)}</span>`).join('') || '<span class="dim">—</span>';
+function refHost(r) {
+  if (!r) return '<span class="dim">Direct</span>';
+  try { return esc(new URL(r).hostname.replace(/^www\./, '')); } catch { return esc(r.slice(0, 40)); }
+}
+
+async function load() {
+  let r;
+  try { r = await fetch('/api/admin/stats', { cache: 'no-store' }); }
+  catch { $('banner').innerHTML = '<div class="err">Server unreachable — is the site waking up? Retrying in 30s.</div>'; return; }
+  if (r.status === 401) {
+    const j = await r.json().catch(() => ({}));
+    $('dash').style.display = 'none'; $('login-view').style.display = '';
+    $('login-hint').textContent = j.passwordSet ? 'Enter the admin password.'
+      : 'ADMIN_PASSWORD is not set on the server, so remote admin access is off. Set it in your host’s environment variables.';
+    return;
+  }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { $('banner').innerHTML = `<div class="err">${esc(j.error || 'Could not load stats.')}</div>`; return; }
+  DATA = j;
+  $('login-view').style.display = 'none'; $('dash').style.display = '';
+  $('banner').innerHTML = j.storage === 'local-file'
+    ? '<div class="warn">Storage: local file. Fine for testing, but on Render this data is wiped on every restart. Set SUPABASE_URL and SUPABASE_SERVICE_KEY to keep it permanently.</div>' : '';
+  $('updated').textContent = 'Updated ' + new Date(j.generatedAt).toLocaleTimeString('en-IN');
+  renderKpis(); renderChart(); renderTable();
+}
+
+function renderKpis() {
+  const k = DATA.kpi;
+  const tile = (l, v, s, cls) => `<div class="kpi ${cls || ''}"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s || '&nbsp;'}</div></div>`;
+  $('kpis').innerHTML =
+    tile('Online now', fmtNum(k.onlineNow), 'active in last 2 min', 'live') +
+    tile('Today', fmtNum(k.today.visitors), `${fmtNum(k.today.visits)} visits`) +
+    tile('Yesterday', fmtNum(k.yesterday.visitors), `${fmtNum(k.yesterday.visits)} visits`) +
+    tile('Last 7 days', fmtNum(k.last7), 'unique visitors') +
+    tile('Last 30 days', fmtNum(k.last30), 'unique visitors') +
+    tile('All time', fmtNum(k.allTimeVisitors), `${fmtNum(k.allTimeVisits)} visits`) +
+    tile('Avg time / visit', fmtDur(k.avgSec30), 'last 30 days') +
+    tile('Accounts', fmtNum(k.registeredUsers), 'signed up');
+}
+
+function renderChart() {
+  const svg = $('chart-svg'), tip = $('tip'), d = DATA.daily;
+  const W = svg.clientWidth || 800, H = 220, padL = 34, padR = 8, padT = 10, padB = 24;
+  const max = Math.max(4, ...d.map(x => x.visitors));
+  const step = Math.pow(10, Math.floor(Math.log10(max))) * (max / Math.pow(10, Math.floor(Math.log10(max))) > 5 ? 2 : 1);
+  const top = Math.ceil(max / step) * step;
+  const iw = W - padL - padR, ih = H - padT - padB, bw = iw / d.length, gap = Math.max(2, bw * 0.28);
+  const y = v => padT + ih - (v / top) * ih;
+  let g = '';
+  for (let v = 0; v <= top; v += step) {
+    g += `<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/>`
+       + `<text x="${padL - 6}" y="${y(v) + 3.5}" text-anchor="end" fill="var(--muted)" font-size="10">${v}</text>`;
+  }
+  d.forEach((x, i) => {
+    const bx = padL + i * bw + gap / 2, w = bw - gap, h = Math.max(0, (x.visitors / top) * ih), r = Math.min(4, w / 2, h);
+    if (h > 0) g += `<path d="M${bx},${padT + ih} v${-(h - r)} q0,${-r} ${r},${-r} h${w - 2 * r} q${r},0 ${r},${r} v${h - r} z" fill="var(--accent)"/>`;
+    if (i % 5 === 4 || i === d.length - 1) {
+      const lab = new Date(x.day + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      g += `<text x="${bx + w / 2}" y="${H - 6}" text-anchor="middle" fill="var(--muted)" font-size="10">${lab}</text>`;
+    }
+    g += `<rect class="hit" data-i="${i}" x="${padL + i * bw}" y="${padT}" width="${bw}" height="${ih}" fill="transparent"/>`;
+  });
+  g += `<line x1="${padL}" x2="${W - padR}" y1="${padT + ih}" y2="${padT + ih}" stroke="var(--border)"/>`;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = g;
+  svg.querySelectorAll('.hit').forEach(el => {
+    el.addEventListener('mousemove', ev => {
+      const x = d[+el.dataset.i];
+      const lab = new Date(x.day + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+      tip.innerHTML = `${lab}<br><b>${x.visitors}</b> visitors · <b>${x.visits}</b> visits<br>avg time <b>${fmtDur(x.avg_sec)}</b>`;
+      tip.style.display = 'block';
+      const box = $('chart').getBoundingClientRect();
+      let left = ev.clientX - box.left + 12;
+      if (left + tip.offsetWidth > box.width) left = ev.clientX - box.left - tip.offsetWidth - 12;
+      tip.style.left = left + 'px'; tip.style.top = (ev.clientY - box.top - 10) + 'px';
+      el.setAttribute('fill', 'rgba(255,255,255,.05)');
+    });
+    el.addEventListener('mouseleave', () => { tip.style.display = 'none'; el.setAttribute('fill', 'transparent'); });
+  });
+}
+
+function renderTable() {
+  if (!DATA) return;
+  $('c-online').textContent = DATA.online.length; $('c-visitors').textContent = DATA.visitors.length;
+  $('c-recent').textContent = DATA.recent.length; $('c-users').textContent = DATA.users.length;
+  const q = $('q').value.trim().toLowerCase();
+  const match = r => !q || JSON.stringify(r).toLowerCase().includes(q);
+  let head, rows;
+  if (TAB === 'online') {
+    head = ['Visitor', 'On site since', 'Active time', 'Pages', 'Location', 'Device', 'From', 'IP'];
+    rows = DATA.online.filter(match).map(r => [who(r), fmtTime(r.started_at), fmtDur(r.duration_sec), pages(r.pages),
+      esc(place(r)), esc(devc(r)), refHost(r.referrer), `<span class="dim">${esc(r.ip)}</span>`]);
+  } else if (TAB === 'visitors') {
+    head = ['Visitor', 'Visits', 'Total time', 'Avg / visit', 'First seen', 'Last seen', 'Location', 'Device', 'IP / network'];
+    rows = DATA.visitors.filter(match).map(r => [who(r), fmtNum(r.visits), fmtDur(r.total_sec), fmtDur(r.total_sec / r.visits),
+      fmtTime(r.first_seen), ago(r.last_seen), esc(place(r)), esc(devc(r)),
+      `<span class="dim">${esc(r.ip)}${r.isp ? '<br>' + esc(r.isp) : ''}</span>`]);
+  } else if (TAB === 'recent') {
+    head = ['Started', 'Visitor', 'Active time', 'Pages', 'Location', 'Device', 'Screen / lang', 'From', 'IP'];
+    rows = DATA.recent.filter(match).map(r => [fmtTime(r.started_at), who(r), fmtDur(r.duration_sec), pages(r.pages),
+      esc(place(r)), esc(devc(r)), `<span class="dim">${esc(r.screen || '—')}<br>${esc(r.lang || '')}</span>`,
+      refHost(r.referrer), `<span class="dim">${esc(r.ip)}</span>`]);
+  } else {
+    head = ['Name', 'Email', 'Signed up', 'Last sign-in', 'Visits', 'Total time'];
+    rows = DATA.users.filter(match).map(u => [`<b>${esc(u.name)}</b>`, esc(u.email), fmtTime(u.created_at),
+      u.last_login ? ago(u.last_login) : '—', fmtNum(u.visits), fmtDur(u.secs)]);
+  }
+  const numCols = { online: [2], visitors: [1, 2, 3], recent: [2], users: [4, 5] }[TAB];
+  const emptyMsg = { online: 'Nobody on the site right now.', visitors: 'No visitors yet.', recent: 'No visits yet.', users: 'No accounts yet.' }[TAB];
+  $('table').innerHTML = rows.length
+    ? `<table><thead><tr>${head.map((h, i) => `<th class="${numCols.includes(i) ? 'num' : ''}">${h}</th>`).join('')}</tr></thead><tbody>`
+      + rows.map(r => `<tr>${r.map((c, i) => `<td class="${numCols.includes(i) ? 'num' : ''}">${c}</td>`).join('')}</tr>`).join('')
+      + '</tbody></table>'
+    : `<div class="empty">${q ? 'No matches.' : emptyMsg}</div>`;
+}
+
+$('tabs').addEventListener('click', e => {
+  const b = e.target.closest('button[data-t]'); if (!b) return;
+  TAB = b.dataset.t;
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+  renderTable();
+});
+
+async function adminLogin(ev) {
+  ev.preventDefault();
+  $('login-err').textContent = '';
+  const r = await fetch('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: $('pw').value }) }).catch(() => null);
+  if (!r) { $('login-err').textContent = 'Network error.'; return; }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { $('login-err').textContent = j.error || 'Sign-in failed.'; return; }
+  $('pw').value = ''; load();
+}
+async function adminLogout() {
+  await fetch('/api/admin/logout', { method: 'POST' }).catch(() => {});
+  DATA = null; $('dash').style.display = 'none'; $('login-view').style.display = '';
+}
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => DATA && renderChart(), 150); });
+load();
+setInterval(() => { if (DATA && document.visibilityState === 'visible') load(); }, 30000);
+</script>
+</body>
+</html>

@@ -6,6 +6,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const visitors = require('./visitors');   // visitor analytics, user accounts, /admin dashboard
 
 const PORT = +process.env.PORT || 5173;   // override with PORT=xxxx to run a second instance
 // Constrained/cloud host: NSE blocks its IP outright, so NSE fetches hang rather than fail.
@@ -4478,6 +4479,9 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify(geo));
       } catch (e) { return upstreamFail(res, '/api/macro-geo', e); }
     }
+
+    // visitor tracking, sign-in/sign-up and the private /admin dashboard
+    if (await visitors.handle(req, res, u)) return;
 
     // static file — the app is a single HTML page; every other asset loads from a CDN or /api.
     // Serve ONLY an explicit allowlist so a public deployment can't hand out server.js, the

@@ -29,3 +29,6 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# visitor analytics + accounts when running without Supabase (local dev only)
+.data/
