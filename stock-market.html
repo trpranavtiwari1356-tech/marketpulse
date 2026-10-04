@@ -218,6 +218,11 @@
   /* PAGES */
   .page { display: none; padding: 2rem; max-width: 1400px; margin: 0 auto; }
   .page.active { display: block; }
+  /* Small legal line at the foot of the home page only. Bottom padding keeps it clear of the
+     floating feedback pill. */
+  .home-disclaimer { max-width: 640px; margin: 2.5rem auto 0; padding: 1rem 0 3.5rem;
+    border-top: 1px solid var(--border); text-align: center; color: var(--muted);
+    font-size: .72rem; line-height: 1.5; }
 
   /* HOME */
   .hero { text-align: center; padding: 3rem 0 2rem; }
@@ -1865,6 +1870,7 @@
       <button class="card-btn">Size a Trade →</button>
     </div>
   </div>
+  <p class="home-disclaimer">MarketPulse is for education only and is not SEBI registered or investment advice. Data may be delayed or inaccurate.</p>
 </div>
 
 <!-- ====== TREND ====== -->
