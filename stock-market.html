@@ -481,8 +481,17 @@
   .acct-card { width: 100%; max-width: 380px; box-sizing: border-box; background: var(--solid);
     border: 1px solid var(--border); border-radius: 16px; padding: 22px;
     box-shadow: 0 24px 60px rgba(0,0,0,.6); position: relative; }
-  .acct-card h3 { margin: 0 0 4px; font-size: 1.1rem; }
+  .acct-card h3 { margin: 0 0 16px; font-size: 1.25rem; font-weight: 700; letter-spacing: -.3px; }
+  .acct-brand { font-size: .82rem; font-weight: 800; letter-spacing: -.2px; color: var(--muted); margin-bottom: 6px; }
+  .acct-brand span { color: var(--gold); }
   .acct-sub { color: var(--muted); font-size: .8rem; margin: 0 0 16px; }
+  .acct-pw { position: relative; }
+  .acct-pw input { padding-right: 40px !important; }
+  .acct-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 30px; height: 30px;
+    display: grid; place-items: center; background: none; border: 0; border-radius: 7px; color: var(--muted); cursor: pointer; }
+  .acct-eye:hover, .acct-eye.on { color: var(--text); background: rgba(255,255,255,.06); }
+  .acct-eye .ico { width: 17px; height: 17px; }
+  .acct-hint { color: var(--muted); font-size: .72rem; margin-top: 6px; }
   .acct-tabs { display: flex; gap: 4px; background: var(--surface2); border-radius: 10px; padding: 3px; margin-bottom: 14px; }
   .acct-tabs button { flex: 1; border: 0; border-radius: 8px; padding: 7px; cursor: pointer;
     background: transparent; color: var(--muted); font: 600 .82rem Inter, sans-serif; }
@@ -495,8 +504,13 @@
     background: var(--accent); color: #fff; font: 700 .88rem Inter, sans-serif; }
   .acct-go:disabled { opacity: .6; cursor: default; }
   .acct-go.ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-  .acct-err { color: var(--red); font-size: .78rem; min-height: 1.1em; margin-top: 10px; }
-  .acct-note { color: var(--muted); font-size: .7rem; line-height: 1.45; margin-top: 14px; }
+  .acct-err { color: var(--red); font-size: .78rem; min-height: 1.1em; margin-top: 8px; }
+  .acct-go { margin-top: 8px !important; }
+  .acct-note { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--muted);
+    font-size: .68rem; margin-top: 14px; text-align: center; opacity: .85; white-space: nowrap; }
+  .acct-note .ico { width: 12px; height: 12px; flex-shrink: 0; }
+  .acct-card { min-width: 0; }
+  @media (max-width: 420px) { .acct-note { white-space: normal; } }
   .acct-x { position: absolute; top: 12px; right: 14px; background: none; border: 0; color: var(--muted);
     font-size: 1.3rem; cursor: pointer; line-height: 1; }
 
@@ -7693,8 +7707,8 @@ function mmRenderRiskTicker() {
   <div class="acct-card" role="dialog" aria-modal="true" aria-labelledby="acct-title">
     <button class="acct-x" onclick="acctClose()" aria-label="Close">&times;</button>
     <div id="acct-form-view">
-      <h3 id="acct-title">Welcome to MarketPulse</h3>
-      <p class="acct-sub">Optional — the whole dashboard works without an account.</p>
+      <div class="acct-brand">Market<span>Pulse</span></div>
+      <h3 id="acct-title">Welcome back</h3>
       <div class="acct-tabs">
         <button type="button" id="acct-t-login" class="on" onclick="acctMode('login')">Sign in</button>
         <button type="button" id="acct-t-signup" onclick="acctMode('signup')">Create account</button>
@@ -7707,11 +7721,17 @@ function mmRenderRiskTicker() {
         <label for="acct-email">Email</label>
         <input id="acct-email" type="email" autocomplete="email" required maxlength="254">
         <label for="acct-pass">Password</label>
-        <input id="acct-pass" type="password" autocomplete="current-password" required minlength="8" maxlength="128">
-        <button class="acct-go" id="acct-go" type="submit">Sign in</button>
+        <div class="acct-pw">
+          <input id="acct-pass" type="password" autocomplete="current-password" required minlength="8" maxlength="128">
+          <button type="button" class="acct-eye" id="acct-eye" onclick="acctTogglePw()" aria-label="Show password">
+            <svg viewBox="0 0 24 24" class="ico"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>
+          </button>
+        </div>
+        <div class="acct-hint" id="acct-hint" style="display:none">At least 8 characters, with a letter and a number.</div>
         <div class="acct-err" id="acct-err" role="alert"></div>
+        <button class="acct-go" id="acct-go" type="submit">Sign in</button>
       </form>
-      <div class="acct-note">Privacy: MarketPulse records basic usage to improve the site — pages opened, time spent, approximate location from your IP address, and device/browser type. If you create an account, your name and email are linked to that usage. Passwords are stored only as a secure hash.</div>
+      <div class="acct-note"><svg viewBox="0 0 24 24" class="ico"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>Passwords securely hashed · Usage logged to improve the site</div>
     </div>
     <div id="acct-me-view" style="display:none">
       <h3>Signed in</h3>
@@ -7743,7 +7763,11 @@ function acctOpen() {
   document.getElementById('acct-modal').classList.add('open');
   if (!acctUser) setTimeout(() => document.getElementById(acctModeNow === 'signup' ? 'acct-name' : 'acct-email').focus(), 30);
 }
-function acctClose() { document.getElementById('acct-modal').classList.remove('open'); }
+function acctClose() {
+  document.getElementById('acct-modal').classList.remove('open');
+  const p = document.getElementById('acct-pass');
+  p.value = ''; if (p.type !== 'password') acctTogglePw();   // never leave a password sitting in the DOM
+}
 function acctMode(m) {
   acctModeNow = m;
   document.getElementById('acct-t-login').classList.toggle('on', m === 'login');
@@ -7751,8 +7775,16 @@ function acctMode(m) {
   document.getElementById('acct-name-row').style.display = m === 'signup' ? '' : 'none';
   document.getElementById('acct-name').required = m === 'signup';
   document.getElementById('acct-go').textContent = m === 'signup' ? 'Create account' : 'Sign in';
+  document.getElementById('acct-title').textContent = m === 'signup' ? 'Create your account' : 'Welcome back';
+  document.getElementById('acct-hint').style.display = m === 'signup' ? '' : 'none';
   document.getElementById('acct-pass').autocomplete = m === 'signup' ? 'new-password' : 'current-password';
   document.getElementById('acct-err').textContent = '';
+}
+function acctTogglePw() {
+  const p = document.getElementById('acct-pass'), show = p.type === 'password';
+  p.type = show ? 'text' : 'password';
+  document.getElementById('acct-eye').classList.toggle('on', show);
+  document.getElementById('acct-eye').setAttribute('aria-label', show ? 'Hide password' : 'Show password');
 }
 async function acctSubmit(ev) {
   ev.preventDefault();

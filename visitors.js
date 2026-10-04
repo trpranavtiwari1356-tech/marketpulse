@@ -17,7 +17,7 @@ const path = require('path');
 // Dashboard copy-paste picks up junk surprisingly often: wrapping quotes, a pasted `NAME=` prefix,
 // zero-width characters from rich-text copies. Strip all of it rather than fail with "Invalid API key".
 const cleanEnv = v => String(v || '')
-  .replace(/[​-‍﻿ ]/g, '')
+  .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '')
   .trim()
   .replace(/^[A-Z_]+\s*=\s*/, '')
   .replace(/^["'`]+|["'`]+$/g, '')
@@ -40,7 +40,8 @@ const FLUSH_MS = 15e3;
 
 // ─────────── small HTTP helpers (kept local so this module doesn't reach into server.js) ───────────
 function sendJson(res, code, obj, extraHeaders) {
-  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(extraHeaders || {}) });
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff', ...(extraHeaders || {}) });
   res.end(JSON.stringify(obj));
 }
 function readBody(req, maxBytes = 8 * 1024) {
@@ -116,20 +117,70 @@ const safeEqual = (a, b) => {
 };
 
 // ─────────── passwords (scrypt, built into Node) ───────────
-const scryptAsync = (pw, salt) => new Promise((res, rej) =>
-  crypto.scrypt(pw, salt, 64, { N: 16384, r: 8, p: 1 }, (e, k) => (e ? rej(e) : res(k))));
+// Salted, memory-hard hash: the database never holds a password, only scrypt$N$r$p$salt$hash.
+// N=2^15 costs ~32 MB and ~100 ms per attempt — cheap for one sign-in, ruinous for a cracker
+// working through a stolen table. The cost is stored per hash, so it can be raised later and old
+// hashes upgrade themselves on the user's next sign-in (needsRehash).
+const SCRYPT = { N: 32768, r: 8, p: 1 };
+const scryptAsync = (pw, salt, o) => new Promise((res, rej) =>
+  crypto.scrypt(pw, salt, 64, { ...o, maxmem: 128 * o.N * o.r * 2 }, (e, k) => (e ? rej(e) : res(k))));
 async function hashPassword(pw) {
   const salt = crypto.randomBytes(16);
-  return `scrypt$${salt.toString('hex')}$${(await scryptAsync(pw, salt)).toString('hex')}`;
+  const k = await scryptAsync(pw, salt, SCRYPT);
+  return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString('hex')}$${k.toString('hex')}`;
+}
+function parseHash(stored) {
+  const f = String(stored || '').split('$');
+  if (f[0] !== 'scrypt') return null;
+  if (f.length === 3) return { N: 16384, r: 8, p: 1, salt: f[1], hash: f[2] };     // first-release format
+  if (f.length === 6) return { N: +f[1], r: +f[2], p: +f[3], salt: f[4], hash: f[5] };
+  return null;
 }
 async function checkPassword(pw, stored) {
-  const [alg, saltHex, hashHex] = String(stored || '').split('$');
-  if (alg !== 'scrypt' || !saltHex || !hashHex) return false;
-  const got = await scryptAsync(pw, Buffer.from(saltHex, 'hex'));
-  const want = Buffer.from(hashHex, 'hex');
+  const h = parseHash(stored);
+  if (!h || !(h.N >= 1024 && h.N <= 1048576)) return false;
+  const got = await scryptAsync(pw, Buffer.from(h.salt, 'hex'), { N: h.N, r: h.r, p: h.p });
+  const want = Buffer.from(h.hash, 'hex');
   return got.length === want.length && crypto.timingSafeEqual(got, want);
 }
-const DUMMY_HASH = 'scrypt$00000000000000000000000000000000$' + '0'.repeat(128);
+const needsRehash = stored => { const h = parseHash(stored); return !h || h.N < SCRYPT.N; };
+const DUMMY_HASH = `scrypt$${SCRYPT.N}$8$1$${'0'.repeat(32)}$${'0'.repeat(128)}`;
+
+// Password rules: length, a letter + a digit, not one of the passwords every cracker tries first,
+// and not just the email's own name part.
+const COMMON_PW = new Set(['password', 'password1', 'password123', '12345678', '123456789', '1234567890',
+  'qwerty123', 'qwertyuiop', 'abc12345', 'abcd1234', 'iloveyou1', 'welcome1', 'admin123', 'letmein1',
+  'india123', 'test1234', 'passw0rd', '11111111', '00000000', '1q2w3e4r', 'asdf1234', 'zaq12wsx',
+  'sunshine1', 'princess1', 'football1', 'monkey123', 'dragon123', 'master123', 'marketpulse1']);
+function passwordProblem(pw, email) {
+  if (pw.length < 8) return 'Password must be at least 8 characters.';
+  if (pw.length > 128) return 'Password is too long (max 128 characters).';
+  if (!/[a-z]/i.test(pw) || !/\d/.test(pw)) return 'Use at least one letter and one number.';
+  if (COMMON_PW.has(pw.toLowerCase())) return 'That password is too common — choose another.';
+  const local = email.split('@')[0];
+  if (local.length >= 4 && pw.toLowerCase().includes(local)) return 'Password must not contain your email name.';
+  return null;
+}
+
+// Account lockout, keyed by EMAIL rather than IP: an attacker rotating IPs (or spoofing the
+// forwarded-for header) still gets only 5 guesses per account per 15 minutes. A global ceiling on
+// failures backs it up against spraying one common password across many emails.
+const LOCK_MAX = 5, LOCK_MS = 15 * 60e3;
+const failsByEmail = new Map();               // email -> { n, until }
+let globalFails = { n: 0, resetAt: 0 };
+function lockedOut(email) {
+  const e = failsByEmail.get(email), now = Date.now();
+  if (now > globalFails.resetAt) globalFails = { n: 0, resetAt: now + 60e3 };
+  return (e && e.n >= LOCK_MAX && now < e.until) || globalFails.n >= 200;
+}
+function noteFailure(email) {
+  const now = Date.now();
+  let e = failsByEmail.get(email);
+  if (!e || now > e.until) e = { n: 0, until: now + LOCK_MS };
+  e.n++; e.until = now + LOCK_MS; failsByEmail.set(email, e);
+  if (failsByEmail.size > 20000) failsByEmail.clear();
+  globalFails.n++;
+}
 
 // ─────────── storage: Supabase REST ───────────
 async function sb(pathAndQuery, opts = {}) {
@@ -170,6 +221,10 @@ const sbStore = {
     await sb(`users?id=eq.${encodeURIComponent(id)}`, { method: 'PATCH',
       body: JSON.stringify({ last_login: new Date().toISOString() }), headers: { Prefer: 'return=minimal' } });
   },
+  async updateHash(id, pass_hash) {
+    await sb(`users?id=eq.${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ pass_hash }),
+      headers: { Prefer: 'return=minimal' } });
+  },
   async listUsers() {
     return sb('users?select=id,name,email,created_at,last_login&order=created_at.desc&limit=5000');
   },
@@ -202,6 +257,7 @@ const fileStore = {
     d.users.push(row); saveSoon(); return row;
   },
   async touchLogin(id) { const u = db().users.find(x => x.id === id); if (u) { u.last_login = new Date().toISOString(); saveSoon(); } },
+  async updateHash(id, pass_hash) { const u = db().users.find(x => x.id === id); if (u) { u.pass_hash = pass_hash; saveSoon(); } },
   async listUsers() {
     return db().users.map(({ pass_hash, ...rest }) => rest).sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
   },
@@ -326,18 +382,26 @@ async function handleAuth(req, res, action) {
 
   try {
     if (action === 'signup') {
-      const name = String(b.name || '').trim().replace(/\s+/g, ' ');
+      // strip control/zero-width characters so a name can't smuggle layout tricks into the admin view
+      const name = String(b.name || '').replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, '')
+        .trim().replace(/\s+/g, ' ');
       if (name.length < 2 || name.length > 60) return sendJson(res, 400, { error: 'Enter your name (2–60 characters).' });
-      if (password.length < 8 || password.length > 128) return sendJson(res, 400, { error: 'Password must be at least 8 characters.' });
+      const bad = passwordProblem(password, email);
+      if (bad) return sendJson(res, 400, { error: bad });
       if (await store.userByEmail(email)) return sendJson(res, 409, { error: 'An account with this email already exists. Sign in instead.' });
       const u = await store.createUser({ name, email, pass_hash: await hashPassword(password), last_login: new Date().toISOString() });
       return sendJson(res, 200, { user: { name: u.name, email: u.email } }, { 'Set-Cookie': userCookie(req, u) });
     }
     if (action === 'login') {
+      if (password.length > 128) return sendJson(res, 401, { error: 'Wrong email or password.' });
+      if (lockedOut(email)) return sendJson(res, 429, { error: 'Too many failed attempts. Try again in 15 minutes.' });
       const u = await store.userByEmail(email);
       const ok = await checkPassword(password, u ? u.pass_hash : DUMMY_HASH);   // same work either way
-      if (!u || !ok) return sendJson(res, 401, { error: 'Wrong email or password.' });
+      if (!u || !ok) { noteFailure(email); return sendJson(res, 401, { error: 'Wrong email or password.' }); }
+      failsByEmail.delete(email);
       store.touchLogin(u.id).catch(() => {});
+      if (needsRehash(u.pass_hash))   // silently move older hashes up to the current cost
+        hashPassword(password).then(h => store.updateHash(u.id, h)).catch(() => {});
       return sendJson(res, 200, { user: { name: u.name, email: u.email } }, { 'Set-Cookie': userCookie(req, u) });
     }
   } catch (e) {
@@ -425,7 +489,9 @@ async function handleAdmin(req, res, action) {
     if (!ADMIN_PASSWORD) return sendJson(res, 400, { error: 'Set ADMIN_PASSWORD on the server to enable remote admin login.' });
     if (authLimited(clientIp(req))) return sendJson(res, 429, { error: 'Too many attempts. Wait a minute.' });
     let b; try { b = await readBody(req); } catch { return sendJson(res, 400, { error: 'Bad request.' }); }
-    if (!safeEqual(b.password || '', ADMIN_PASSWORD)) return sendJson(res, 401, { error: 'Wrong password.' });
+    if (lockedOut('\u0000admin')) return sendJson(res, 429, { error: 'Too many failed attempts. Try again in 15 minutes.' });
+    if (!safeEqual(b.password || '', ADMIN_PASSWORD)) { noteFailure('\u0000admin'); return sendJson(res, 401, { error: 'Wrong password.' }); }
+    failsByEmail.delete('\u0000admin');
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'mp_a', sign({ k: 'a', x: Date.now() + ADMIN_TTL_SEC * 1000 }), ADMIN_TTL_SEC) });
   }
   if (action === 'logout') return sendJson(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'mp_a', '', 0) });
@@ -445,7 +511,7 @@ async function handle(req, res, u) {
   if (p.startsWith('/api/admin/')) { await handleAdmin(req, res, p.slice('/api/admin/'.length)); return true; }
   if (p === '/admin' || p === '/admin/') {
     res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex',
-      'X-Frame-Options': 'DENY' });
+      'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
     res.end(fs.readFileSync(path.join(__dirname, 'admin.html')));
     return true;
   }

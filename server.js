@@ -3824,7 +3824,11 @@ function withMeta(payload, meta) {
 
 // ─────────── HTTP routing ───────────
 function send(res, code, body, type) {
-  res.writeHead(code, { 'Content-Type': type || 'application/json', 'Cache-Control': 'no-store' });
+  const headers = { 'Content-Type': type || 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
+  // The page carries the sign-in form: refuse to be framed by other sites (clickjacking) and keep
+  // full URLs out of the Referer sent to the CDNs/APIs it loads.
+  if (type === 'text/html') Object.assign(headers, { 'X-Frame-Options': 'SAMEORIGIN', 'Referrer-Policy': 'strict-origin-when-cross-origin' });
+  res.writeHead(code, headers);
   res.end(body);
 }
 
