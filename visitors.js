@@ -14,8 +14,16 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const SB_URL = (process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
-const SB_KEY = (process.env.SUPABASE_SERVICE_KEY || '').trim();
+// Dashboard copy-paste picks up junk surprisingly often: wrapping quotes, a pasted `NAME=` prefix,
+// zero-width characters from rich-text copies. Strip all of it rather than fail with "Invalid API key".
+const cleanEnv = v => String(v || '')
+  .replace(/[​-‍﻿ ]/g, '')
+  .trim()
+  .replace(/^[A-Z_]+\s*=\s*/, '')
+  .replace(/^["'`]+|["'`]+$/g, '')
+  .replace(/\s+/g, '');
+const SB_URL = cleanEnv(process.env.SUPABASE_URL).replace(/\/(rest\/v1)?\/*$/, '');
+const SB_KEY = cleanEnv(process.env.SUPABASE_SERVICE_KEY);
 const USE_SB = /^https:\/\/\S+$/.test(SB_URL) && SB_KEY.length > 20;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
@@ -444,6 +452,13 @@ async function handle(req, res, u) {
   return false;
 }
 
+// Safe diagnostic: the key's KIND and length only, never its contents.
+if (USE_SB) {
+  const kind = SB_KEY.startsWith('sb_secret_') ? 'sb_secret (correct)'
+    : SB_KEY.startsWith('sb_publishable_') ? 'sb_publishable (WRONG — use the Secret key)'
+    : SB_KEY.startsWith('eyJ') ? 'legacy JWT' : 'unrecognised format (re-copy the Secret key)';
+  console.log(`[visitors] storage: Supabase ${SB_URL} · key type: ${kind} · length ${SB_KEY.length}`);
+}
 if (!USE_SB) console.log('[visitors] storage: local file .data/visitors.json (set SUPABASE_URL + SUPABASE_SERVICE_KEY for permanent storage)');
 if (!ADMIN_PASSWORD) console.log('[visitors] ADMIN_PASSWORD not set — /admin is open to localhost only');
 
