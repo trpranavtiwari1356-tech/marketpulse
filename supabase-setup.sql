@@ -28,3 +28,8 @@ create table if not exists users (
 -- Lock both tables away from the public API key. Only the server (secret key) can read/write.
 alter table visits enable row level security;
 alter table users  enable row level security;
+
+-- Explicit grants for the server's secret key, so this works even when the project has
+-- "Automatically expose new tables" switched off (the recommended setting).
+grant select, insert, update, delete on table visits, users to service_role;
+grant usage, select on sequence users_id_seq to service_role;
