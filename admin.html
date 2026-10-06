@@ -62,11 +62,58 @@
   td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.05); vertical-align: top; }
   tr:hover td { background: rgba(255,255,255,.03); }
   td.num, th.num { text-align: right; white-space: nowrap; }
-  .who b { display: block; } .who span { color: var(--muted); font-size: .72rem; }
+  .who { min-width: 200px; } .who b { display: block; white-space: nowrap; } .who b.anon { color: var(--muted); font-weight: 600; }
+  .who span { color: var(--muted); font-size: .72rem; }
   .anon { color: var(--muted); font-family: ui-monospace, monospace; font-size: .74rem; }
   .chip { display: inline-block; background: var(--surface2); border-radius: 5px; padding: 1px 6px; margin: 1px 2px 1px 0; font-size: .7rem; color: var(--muted); }
   .dim { color: var(--muted); }
   .empty { color: var(--muted); padding: 18px 10px; text-align: center; }
+
+  .summary { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 16px; }
+  .summary.on { border-color: rgba(46,163,107,.55); background: rgba(46,163,107,.08); }
+  .summary .big { font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 9px; }
+  .summary.on .big::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--green); animation: pulse 1.6s infinite; flex: none; }
+  .summary ul { margin: 8px 0 0; padding-left: 19px; }
+  .summary li { margin: 3px 0; }
+  .summary .line { color: var(--muted); font-size: .84rem; margin-top: 8px; }
+  .summary .line b { color: var(--text); }
+  .tag { display: inline-block; border-radius: 5px; padding: 0 6px; margin: 2px 4px 0 0; font-size: .66rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; white-space: nowrap; }
+  .tag.you { background: var(--surface2); color: var(--muted); }
+  .tag.new { background: rgba(201,163,95,.18); color: var(--gold); }
+  .tag.live { background: rgba(46,163,107,.18); color: var(--green); }
+  .tag.back { background: rgba(107,155,209,.18); color: var(--accent); }
+  .tag.net { background: transparent; border: 1px dashed var(--border); color: var(--muted); }
+  tr.me td { opacity: .45; }
+  .act { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 2px 7px;
+    font: 600 .7rem Inter, sans-serif; cursor: pointer; white-space: nowrap; margin: 1px 0; }
+  .act:hover { color: var(--text); border-color: var(--accent); }
+  .incl { color: var(--muted); font-size: .76rem; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+
+  .grp { margin: 0 0 16px; }
+  .grp h3 { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 8px; font-weight: 700; }
+  .grp h3 .n { color: var(--text); margin-left: 4px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
+  .pc { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 12px; padding: 13px 14px; }
+  .pc.on { border-left-color: var(--green); background: rgba(46,163,107,.06); }
+  .pc.new { border-left-color: var(--gold); }
+  .pc-top { display: flex; align-items: center; gap: 10px; }
+  .pc-ico { width: 34px; height: 34px; border-radius: 9px; background: var(--surface2); display: grid; place-items: center; flex: none; color: var(--muted); }
+  .pc.on .pc-ico { color: var(--green); } .pc.new .pc-ico { color: var(--gold); }
+  .pc-name { min-width: 0; flex: 1; }
+  .pc-name b { display: block; font-size: .95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pc-name span { color: var(--muted); font-size: .74rem; }
+  .pc-loc { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; font-weight: 600; font-size: .86rem; }
+  .pc-loc svg { flex: none; color: var(--accent); }
+  .pc-loc .dim { font-weight: 400; font-size: .76rem; }
+  .pc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 0 0; }
+  .pc-stats div { background: var(--surface2); border-radius: 8px; padding: 6px 8px; }
+  .pc-stats span { display: block; color: var(--muted); font-size: .66rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+  .pc-stats b { font-size: .95rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pc-foot { color: var(--muted); font-size: .76rem; margin-top: 9px; }
+  .pc-foot b { color: var(--text); font-weight: 600; }
+  .pc-pages { margin-top: 6px; }
+  .pc-act { margin-top: 9px; display: flex; gap: 6px; }
+  .mine { color: var(--muted); font-size: .8rem; margin: -4px 0 16px; }
 
   .login { max-width: 360px; margin: 12vh auto 0; background: var(--solid); border: 1px solid var(--border);
     border-radius: 16px; padding: 24px; }
@@ -98,11 +145,14 @@
       <div class="logo">Market<span>Pulse</span><small>Admin</small></div>
       <div class="grow"></div>
       <span class="meta" id="updated"></span>
+      <label class="incl" title="Your own devices are left out of the numbers unless this is ticked"><input type="checkbox" id="incl" onchange="toggleIncl()"> Count my own visits</label>
       <button class="btn" onclick="load()">Refresh</button>
       <a class="btn" href="/" style="text-decoration:none">Open site</a>
       <button class="btn" onclick="adminLogout()">Sign out</button>
     </header>
     <div id="banner"></div>
+    <div class="summary" id="summary"></div>
+    <div id="people"></div>
     <div class="kpis" id="kpis"></div>
 
     <div class="card">
@@ -113,8 +163,8 @@
 
     <div class="card">
       <div class="tabs" id="tabs">
-        <button data-t="online" class="on">Online now<span class="cnt" id="c-online"></span></button>
-        <button data-t="visitors">Visitors<span class="cnt" id="c-visitors"></span></button>
+        <button data-t="online">Online now<span class="cnt" id="c-online"></span></button>
+        <button data-t="visitors" class="on">Visitors<span class="cnt" id="c-visitors"></span></button>
         <button data-t="recent">Recent visits<span class="cnt" id="c-recent"></span></button>
         <button data-t="users">Accounts<span class="cnt" id="c-users"></span></button>
         <input class="search" id="q" placeholder="Filter by name, city, device…" oninput="renderTable()">
@@ -125,7 +175,18 @@
 </div>
 
 <script>
-let DATA = null, TAB = 'online';
+let DATA = null, TAB = 'visitors';
+// "Me" = your own browsers. Kept in this browser's storage; this browser is added automatically
+// (the site's tracker stores its visitor id under mp_vid on the same origin).
+const lsGet = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+const ME = new Set(lsGet('mp_admin_me', []));
+const NAMES = lsGet('mp_admin_names', {});
+let INCLUDE_ME = !!lsGet('mp_admin_incl', false);
+try {
+  const own = localStorage.getItem('mp_vid');
+  if (own && lsGet('mp_admin_auto', null) !== own) { ME.add(own); lsSet('mp_admin_me', [...ME]); lsSet('mp_admin_auto', own); }
+} catch {}
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtNum = n => (n || 0).toLocaleString('en-IN');
@@ -148,9 +209,27 @@ function ago(iso) {
 }
 const place = r => [r.city, r.region, r.country].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(', ') || '—';
 const devc = r => [r.device, r.os, r.browser].filter(Boolean).join(' · ') || '—';
-const who = r => r.user_name || r.name
-  ? `<div class="who"><b>${esc(r.user_name || r.name)}</b><span>${esc(r.user_email || r.email || '')}</span></div>`
-  : `<span class="anon" title="Anonymous visitor ID">Anon · ${esc((r.visitor_id || '').slice(0, 8))}</span>`;
+const shortId = r => (r.visitor_id || '').slice(0, 8);
+const kind = r => r.device === 'Mobile' ? `${r.os || ''} phone` : r.device === 'Tablet' ? `${r.os || ''} tablet` : `${r.os || ''} computer`;
+const label = r => NAMES[r.visitor_id] || r.user_name || r.name || `${kind(r).trim()} · ${shortId(r)}`;
+const byVid = () => new Map((DATA ? DATA.visitors : []).map(v => [v.visitor_id, v]));
+function tags(r) {
+  if (ME.has(r.visitor_id)) return '<span class="tag you">You</span>';
+  const v = byVid().get(r.visitor_id) || r;
+  let t = '';
+  if (DATA.online.some(o => o.visitor_id === r.visitor_id)) t += '<span class="tag live">Online</span>';
+  if (v.first_seen && Date.now() - Date.parse(v.first_seen) < 86400e3) t += '<span class="tag new">New</span>';
+  else if ((v.visits || 0) > 1) t += '<span class="tag back">Returning</span>';
+  if (DATA.yourIp && r.ip === DATA.yourIp) t += '<span class="tag net" title="Same internet connection as this browser, so it could be another of your devices">Your network</span>';
+  return t;
+}
+const who = r => {
+  const named = NAMES[r.visitor_id] || r.user_name || r.name;
+  return `<div class="who"><b${named ? '' : ' class="anon" title="Anonymous visitor ID ' + esc(r.visitor_id) + '"'}>${esc(label(r))}</b>`
+    + `${r.user_email || r.email ? `<span>${esc(r.user_email || r.email)}</span>` : ''}<div>${tags(r)}</div></div>`;
+};
+const actions = r => `<button class="act" data-me="${esc(r.visitor_id)}">${ME.has(r.visitor_id) ? 'Not me' : 'This is me'}</button> `
+  + `<button class="act" data-name="${esc(r.visitor_id)}">${NAMES[r.visitor_id] ? 'Rename' : 'Name'}</button>`;
 const pages = p => (Array.isArray(p) ? p : []).map(x => `<span class="chip">${esc(x)}</span>`).join('') || '<span class="dim">—</span>';
 function refHost(r) {
   if (!r) return '<span class="dim">Direct</span>';
@@ -159,7 +238,8 @@ function refHost(r) {
 
 async function load() {
   let r;
-  try { r = await fetch('/api/admin/stats', { cache: 'no-store' }); }
+  const q = !INCLUDE_ME && ME.size ? '?exclude=' + encodeURIComponent([...ME].join(',')) : '';
+  try { r = await fetch('/api/admin/stats' + q, { cache: 'no-store' }); }
   catch { $('banner').innerHTML = '<div class="err">Server unreachable — is the site waking up? Retrying in 30s.</div>'; return; }
   if (r.status === 401) {
     const j = await r.json().catch(() => ({}));
@@ -175,8 +255,80 @@ async function load() {
   $('banner').innerHTML = j.storage === 'local-file'
     ? '<div class="warn">Storage: local file. Fine for testing, but on Render this data is wiped on every restart. Set SUPABASE_URL and SUPABASE_SERVICE_KEY to keep it permanently.</div>' : '';
   $('updated').textContent = 'Updated ' + new Date(j.generatedAt).toLocaleTimeString('en-IN');
-  renderKpis(); renderChart(); renderTable();
+  $('incl').checked = INCLUDE_ME;
+  renderSummary(); renderPeople(); renderKpis(); renderChart(); renderTable();
 }
+
+// One card per person: who, where, how long, when, what they looked at.
+const ICON = {
+  Mobile: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>',
+  Tablet: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2.5"/><path d="M11 18h2"/></svg>',
+  Desktop: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+};
+const PIN = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>';
+function refText(r) {
+  if (!r) return 'typed the link / shared link';
+  try { return new URL(r).hostname.replace(/^www\./, ''); } catch { return r.slice(0, 40); }
+}
+function card(v, cls) {
+  const live = DATA.online.find(o => o.visitor_id === v.visitor_id);
+  const statLast = live ? '<b style="color:var(--green)">Now</b>' : `<b>${ago(v.last_seen)}</b>`;
+  return `<div class="pc ${cls}">
+    <div class="pc-top"><div class="pc-ico">${ICON[v.device] || ICON.Desktop}</div>
+      <div class="pc-name"><b title="${esc(v.visitor_id)}">${esc(label(v))}</b><span>${esc([v.os, v.browser].filter(Boolean).join(' · '))}</span></div></div>
+    <div style="margin-top:6px">${tags(v)}</div>
+    <div class="pc-loc">${PIN}<span>${esc(place(v) === '—' ? 'Location unknown' : place(v))}${v.isp ? ` <span class="dim">· ${esc(v.isp)}</span>` : ''}</span></div>
+    <div class="pc-stats">
+      <div><span>Time spent</span><b>${fmtDur(v.total_sec)}</b></div>
+      <div><span>Visits</span><b>${fmtNum(v.visits)}</b></div>
+      <div><span>Last seen</span>${statLast}</div>
+    </div>
+    <div class="pc-foot">${live ? `On the site for <b>${fmtDur(live.duration_sec)}</b> this visit · ` : ''}First came <b>${fmtTime(v.first_seen)}</b> · via ${esc(refText(v.referrer))}</div>
+    ${v.pages && v.pages.length ? `<div class="pc-pages">${pages(v.pages)}</div>` : ''}
+    <div class="pc-act">${actions(v)}</div>
+  </div>`;
+}
+function renderPeople() {
+  const others = DATA.visitors.filter(v => !ME.has(v.visitor_id));
+  const onIds = new Set(DATA.online.map(o => o.visitor_id));
+  const isNew = v => Date.now() - Date.parse(v.first_seen) < 86400e3;
+  const online = others.filter(v => onIds.has(v.visitor_id));
+  const fresh = others.filter(v => !onIds.has(v.visitor_id) && isNew(v));
+  const earlier = others.filter(v => !onIds.has(v.visitor_id) && !isNew(v));
+  const grp = (title, list, cls, max) => list.length
+    ? `<div class="grp"><h3>${title}<span class="n">${list.length}</span></h3><div class="cards">`
+      + list.slice(0, max || 99).map(v => card(v, cls)).join('') + '</div>'
+      + (max && list.length > max ? `<div class="mine" style="margin-top:8px">+ ${list.length - max} more in the Visitors table below</div>` : '') + '</div>'
+    : '';
+  const mine = DATA.visitors.length - others.length;
+  $('people').innerHTML = grp('On the site now', online, 'on') + grp('New in the last 24 hours', fresh, 'new') + grp('Earlier visitors', earlier, '', 6)
+    + (mine ? `<div class="mine">${mine} of your own device${mine === 1 ? ' is' : 's are'} hidden here and left out of the numbers.</div>` : '');
+}
+
+// The plain-English answer to "is anyone other than me here?"
+const where = (r, pre) => place(r) === '—' ? '' : pre + esc(place(r));
+function renderSummary() {
+  const others = r => !ME.has(r.visitor_id);
+  const seen = new Set();
+  const online = DATA.online.filter(others).filter(r => !seen.has(r.visitor_id) && seen.add(r.visitor_id));
+  const people = DATA.visitors.filter(others);
+  const todayStr = new Date().toDateString();
+  const today = people.filter(v => new Date(v.last_seen).toDateString() === todayStr);
+  const newToday = people.filter(v => new Date(v.first_seen).toDateString() === todayStr);
+  const last = people[0];
+  document.title = online.length ? `(${online.length}) MarketPulse Admin` : 'MarketPulse Admin';
+  $('summary').className = 'summary' + (online.length ? ' on' : '');
+  $('summary').innerHTML =
+    `<div class="big">${online.length
+      ? `${online.length} ${online.length === 1 ? 'person is' : 'people are'} on the site right now`
+      : 'Nobody else is on the site right now'}</div>`
+    + `<div class="line">Today: <b>${today.length}</b> ${today.length === 1 ? 'person' : 'people'} besides you`
+    + ` (<b>${newToday.length}</b> new)`
+    + (last ? ` · Last visitor: <b>${esc(label(last))}</b>${where(last, ', ')}, ${ago(last.last_seen)}` : ' · No visitors besides you yet')
+    + `</div>`
+    + (ME.size ? '' : '<div class="line">Tip: click “This is me” on your own devices so they stop counting as visitors.</div>');
+}
+function toggleIncl() { INCLUDE_ME = $('incl').checked; lsSet('mp_admin_incl', INCLUDE_ME); load(); }
 
 function renderKpis() {
   const k = DATA.kpi;
@@ -239,19 +391,23 @@ function renderTable() {
   $('c-recent').textContent = DATA.recent.length; $('c-users').textContent = DATA.users.length;
   const q = $('q').value.trim().toLowerCase();
   const match = r => !q || JSON.stringify(r).toLowerCase().includes(q);
-  let head, rows;
+  let head, rows, src = [];
   if (TAB === 'online') {
-    head = ['Visitor', 'On site since', 'Active time', 'Pages', 'Location', 'Device', 'From', 'IP'];
-    rows = DATA.online.filter(match).map(r => [who(r), fmtTime(r.started_at), fmtDur(r.duration_sec), pages(r.pages),
-      esc(place(r)), esc(devc(r)), refHost(r.referrer), `<span class="dim">${esc(r.ip)}</span>`]);
+    head = ['Visitor', 'On site since', 'Active time', 'Pages', 'Location', 'Device', 'From', 'IP', ''];
+    src = DATA.online.filter(match);
+    rows = src.map(r => [who(r), fmtTime(r.started_at), fmtDur(r.duration_sec), pages(r.pages),
+      esc(place(r)), esc(devc(r)), refHost(r.referrer), `<span class="dim">${esc(r.ip)}</span>`, actions(r)]);
   } else if (TAB === 'visitors') {
-    head = ['Visitor', 'Visits', 'Total time', 'Avg / visit', 'First seen', 'Last seen', 'Location', 'Device', 'IP / network'];
-    rows = DATA.visitors.filter(match).map(r => [who(r), fmtNum(r.visits), fmtDur(r.total_sec), fmtDur(r.total_sec / r.visits),
+    head = ['Visitor', 'Visits', 'Total time', 'Avg / visit', 'First seen', 'Last seen', 'Location', 'Device', 'IP / network', ''];
+    // real visitors first, your own devices at the bottom
+    src = DATA.visitors.filter(match).sort((a, b) => ME.has(a.visitor_id) - ME.has(b.visitor_id));
+    rows = src.map(r => [who(r), fmtNum(r.visits), fmtDur(r.total_sec), fmtDur(r.total_sec / r.visits),
       fmtTime(r.first_seen), ago(r.last_seen), esc(place(r)), esc(devc(r)),
-      `<span class="dim">${esc(r.ip)}${r.isp ? '<br>' + esc(r.isp) : ''}</span>`]);
+      `<span class="dim">${esc(r.ip)}${r.isp ? '<br>' + esc(r.isp) : ''}</span>`, actions(r)]);
   } else if (TAB === 'recent') {
     head = ['Started', 'Visitor', 'Active time', 'Pages', 'Location', 'Device', 'Screen / lang', 'From', 'IP'];
-    rows = DATA.recent.filter(match).map(r => [fmtTime(r.started_at), who(r), fmtDur(r.duration_sec), pages(r.pages),
+    src = DATA.recent.filter(match);
+    rows = src.map(r => [fmtTime(r.started_at), who(r), fmtDur(r.duration_sec), pages(r.pages),
       esc(place(r)), esc(devc(r)), `<span class="dim">${esc(r.screen || '—')}<br>${esc(r.lang || '')}</span>`,
       refHost(r.referrer), `<span class="dim">${esc(r.ip)}</span>`]);
   } else {
@@ -263,11 +419,25 @@ function renderTable() {
   const emptyMsg = { online: 'Nobody on the site right now.', visitors: 'No visitors yet.', recent: 'No visits yet.', users: 'No accounts yet.' }[TAB];
   $('table').innerHTML = rows.length
     ? `<table><thead><tr>${head.map((h, i) => `<th class="${numCols.includes(i) ? 'num' : ''}">${h}</th>`).join('')}</tr></thead><tbody>`
-      + rows.map(r => `<tr>${r.map((c, i) => `<td class="${numCols.includes(i) ? 'num' : ''}">${c}</td>`).join('')}</tr>`).join('')
+      + rows.map((r, i) => `<tr${src[i] && ME.has(src[i].visitor_id) ? ' class="me"' : ''}>${r.map((c, i) => `<td class="${numCols.includes(i) ? 'num' : ''}">${c}</td>`).join('')}</tr>`).join('')
       + '</tbody></table>'
     : `<div class="empty">${q ? 'No matches.' : emptyMsg}</div>`;
 }
 
+$('dash').addEventListener('click', e => {
+  const me = e.target.closest('[data-me]'), nm = e.target.closest('[data-name]');
+  if (me) {
+    const id = me.dataset.me;
+    ME.has(id) ? ME.delete(id) : ME.add(id);
+    lsSet('mp_admin_me', [...ME]); load();
+  } else if (nm) {
+    const id = nm.dataset.name;
+    const v = prompt('Name this visitor (e.g. "Rahul" or "My phone"). Leave empty to clear.', NAMES[id] || '');
+    if (v === null) return;
+    v.trim() ? NAMES[id] = v.trim().slice(0, 40) : delete NAMES[id];
+    lsSet('mp_admin_names', NAMES); renderSummary(); renderPeople(); renderTable();
+  }
+});
 $('tabs').addEventListener('click', e => {
   const b = e.target.closest('button[data-t]'); if (!b) return;
   TAB = b.dataset.t;

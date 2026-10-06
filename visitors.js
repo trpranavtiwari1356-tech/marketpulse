@@ -420,7 +420,7 @@ function isAdmin(req) {
 
 const istDay = ms => new Date(ms + IST_MS).toISOString().slice(0, 10);
 
-async function adminStats() {
+async function adminStats(exclude = new Set(), yourIp = null) {
   await flush();
   const [visits, users] = await Promise.all([store.allVisits(), store.listUsers()]);
   const now = Date.now();
@@ -428,17 +428,24 @@ async function adminStats() {
 
   const byDay = new Map();               // day -> { visitors:Set, visits, secs }
   const byVisitor = new Map();           // visitor_id -> summary
-  for (const v of visits) {
+  // `exclude` holds the owner's own browsers (marked on the admin page): they stay in the lists,
+  // tagged there, but are left out of every count and the chart.
+  const counted = exclude.size ? visits.filter(v => !exclude.has(v.visitor_id)) : visits;
+  for (const v of counted) {
     const t = Date.parse(v.started_at), day = istDay(t);
     let d = byDay.get(day);
     if (!d) byDay.set(day, d = { visitors: new Set(), visits: 0, secs: 0 });
     d.visitors.add(v.visitor_id); d.visits++; d.secs += v.duration_sec || 0;
+  }
+  for (const v of visits) {
 
     let s = byVisitor.get(v.visitor_id);
     if (!s) byVisitor.set(v.visitor_id, s = { visitor_id: v.visitor_id, visits: 0, total_sec: 0, first_seen: v.started_at,
       last_seen: v.last_seen || v.started_at, name: null, email: null, city: v.city, region: v.region, country: v.country,
-      device: v.device, browser: v.browser, os: v.os, ip: v.ip, isp: v.isp });
+      device: v.device, browser: v.browser, os: v.os, ip: v.ip, isp: v.isp, pages: new Set(), referrer: null });
     s.visits++; s.total_sec += v.duration_sec || 0;
+    (v.pages || []).forEach(x => s.pages.add(x));
+    if (v.referrer) s.referrer = v.referrer;   // rows run newest-first, so this ends on the first referrer
     if (v.started_at < s.first_seen) s.first_seen = v.started_at;
     if ((v.last_seen || '') > s.last_seen) s.last_seen = v.last_seen;
     if (v.user_name && !s.name) { s.name = v.user_name; s.email = v.user_email; }
@@ -454,7 +461,7 @@ async function adminStats() {
     const k = istDay(now - i * 86400e3), d = byDay.get(k);
     daily.push({ day: k, visitors: d ? d.visitors.size : 0, visits: d ? d.visits : 0, avg_sec: d && d.visits ? Math.round(d.secs / d.visits) : 0 });
   }
-  const recent30 = visits.filter(v => Date.parse(v.started_at) > now - 30 * 86400e3 && (v.duration_sec || 0) > 0);
+  const recent30 = counted.filter(v => Date.parse(v.started_at) > now - 30 * 86400e3 && (v.duration_sec || 0) > 0);
   const avgSec = recent30.length ? Math.round(recent30.reduce((a, v) => a + v.duration_sec, 0) / recent30.length) : 0;
 
   const onlineNow = [...live.values()].filter(r => now - Date.parse(r.last_seen) < LIVE_WINDOW_MS)
@@ -468,22 +475,23 @@ async function adminStats() {
   return {
     storage: USE_SB ? 'supabase' : 'local-file',
     generatedAt: new Date(now).toISOString(),
+    yourIp,
     kpi: {
-      onlineNow: onlineNow.length,
+      onlineNow: onlineNow.filter(r => !exclude.has(r.visitor_id)).length,
       today: dayStat(today), yesterday: dayStat(yesterday),
       last7: uniqueSince(7), last30: uniqueSince(30),
-      allTimeVisitors: byVisitor.size, allTimeVisits: visits.length,
+      allTimeVisitors: [...byVisitor.keys()].filter(id => !exclude.has(id)).length, allTimeVisits: counted.length,
       avgSec30: avgSec, registeredUsers: users.length,
     },
     daily,
     online: onlineNow.slice(0, 100),
     recent: visits.slice(0, 200),
-    visitors: [...byVisitor.values()].sort((a, b) => (a.last_seen < b.last_seen ? 1 : -1)).slice(0, 500),
+    visitors: [...byVisitor.values()].map(s => ({ ...s, pages: [...s.pages] })).sort((a, b) => (a.last_seen < b.last_seen ? 1 : -1)).slice(0, 500),
     users: users.map(u => ({ ...u, ...(visitsByUser.get(u.id) || { visits: 0, secs: 0 }) })),
   };
 }
 
-async function handleAdmin(req, res, action) {
+async function handleAdmin(req, res, action, query) {
   if (action === 'login') {
     if (req.method !== 'POST') return sendJson(res, 405, { error: 'Use POST.' });
     if (!ADMIN_PASSWORD) return sendJson(res, 400, { error: 'Set ADMIN_PASSWORD on the server to enable remote admin login.' });
@@ -497,7 +505,8 @@ async function handleAdmin(req, res, action) {
   if (action === 'logout') return sendJson(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'mp_a', '', 0) });
   if (!isAdmin(req)) return sendJson(res, 401, { error: 'Sign in required.', passwordSet: !!ADMIN_PASSWORD });
   if (action === 'stats') {
-    try { return sendJson(res, 200, await adminStats()); }
+    const exclude = new Set(String(query.get('exclude') || '').split(',').filter(id => ID_RE.test(id)).slice(0, 200));
+    try { return sendJson(res, 200, await adminStats(exclude, clientIp(req))); }
     catch (e) { console.error('[visitors] stats error:', e.message); return sendJson(res, 503, { error: 'Could not read the analytics store: ' + e.message }); }
   }
   return sendJson(res, 404, { error: 'Not found.' });
@@ -508,7 +517,7 @@ async function handle(req, res, u) {
   const p = u.pathname;
   if (p === '/api/t' && req.method === 'POST') { await handleTrack(req, res, currentUser(req)); return true; }
   if (p.startsWith('/api/auth/')) { await handleAuth(req, res, p.slice('/api/auth/'.length)); return true; }
-  if (p.startsWith('/api/admin/')) { await handleAdmin(req, res, p.slice('/api/admin/'.length)); return true; }
+  if (p.startsWith('/api/admin/')) { await handleAdmin(req, res, p.slice('/api/admin/'.length), u.searchParams); return true; }
   if (p === '/admin' || p === '/admin/') {
     res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex',
       'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
