@@ -139,7 +139,14 @@ Set these environment variables on the host (Render → your service → Environ
 | `SUPABASE_URL` | Supabase project URL (Project Settings → API). |
 | `SUPABASE_SERVICE_KEY` | Supabase **secret / service_role** key — server-only, never put it in the HTML. |
 | `SESSION_SECRET` | Optional. Any long random string; otherwise derived from `ADMIN_PASSWORD`. |
+| `TELEGRAM_BOT_TOKEN` | Optional. Bot token from @BotFather — enables a Telegram message for every new visitor. |
+| `TELEGRAM_CHAT_ID` | Optional. Your chat id; `/admin` → *New-visitor alerts* → **Find my chat ID** shows it. |
 
-Create the tables once by running `supabase-setup.sql` in Supabase's SQL editor. Without
+Your own devices are marked **This is me** on `/admin` (any browser signed in to `/admin` is
+marked automatically) and are left out of every count and alert. Marks and names are stored in
+the `visitor_labels` table.
+
+Create the tables once by running `supabase-setup.sql` in Supabase's SQL editor (re-run it after
+updates; it is safe to re-run). Without
 Supabase the data goes to `.data/visitors.json`, which is fine locally but wiped on every
 Render restart.

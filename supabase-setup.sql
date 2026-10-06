@@ -25,11 +25,20 @@ create table if not exists users (
   last_login timestamptz
 );
 
--- Lock both tables away from the public API key. Only the server (secret key) can read/write.
+-- Your own devices + friendly names, set from /admin ("This is me" / "Name").
+create table if not exists visitor_labels (
+  visitor_id text primary key,
+  name       text,
+  is_owner   boolean not null default false,
+  updated_at timestamptz not null default now()
+);
+
+-- Lock the tables away from the public API key. Only the server (secret key) can read/write.
 alter table visits enable row level security;
 alter table users  enable row level security;
+alter table visitor_labels enable row level security;
 
 -- Explicit grants for the server's secret key, so this works even when the project has
 -- "Automatically expose new tables" switched off (the recommended setting).
-grant select, insert, update, delete on table visits, users to service_role;
+grant select, insert, update, delete on table visits, users, visitor_labels to service_role;
 grant usage, select on sequence users_id_seq to service_role;

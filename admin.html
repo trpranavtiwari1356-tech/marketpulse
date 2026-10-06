@@ -87,6 +87,16 @@
   .act { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 2px 7px;
     font: 600 .7rem Inter, sans-serif; cursor: pointer; white-space: nowrap; margin: 1px 0; }
   .act:hover { color: var(--text); border-color: var(--accent); }
+  .alerts .row { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid rgba(255,255,255,.06); }
+  .alerts .row:first-of-type { border-top: 0; }
+  .alerts .st { flex: none; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-radius: 6px; padding: 2px 8px; margin-top: 2px; min-width: 42px; text-align: center; }
+  .alerts .st.ok { background: rgba(46,163,107,.18); color: var(--green); }
+  .alerts .st.no { background: var(--surface2); color: var(--muted); }
+  .alerts ol { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: .8rem; }
+  .alerts li { margin: 3px 0; } .alerts li b, .alerts code { color: var(--text); }
+  .alerts code { background: var(--surface2); border-radius: 4px; padding: 0 5px; font-size: .78rem; }
+  .alerts .msg { font-size: .8rem; margin-top: 6px; }
+  .q { border-bottom: 1px dotted var(--muted); cursor: help; }
   .incl { color: var(--muted); font-size: .76rem; display: flex; align-items: center; gap: 5px; cursor: pointer; }
 
   .grp { margin: 0 0 16px; }
@@ -171,22 +181,22 @@
       </div>
       <div class="tbl" id="table"></div>
     </div>
+
+    <div class="card alerts" id="alerts"></div>
   </div>
 </div>
 
 <script>
 let DATA = null, TAB = 'visitors';
-// "Me" = your own browsers. Kept in this browser's storage; this browser is added automatically
-// (the site's tracker stores its visitor id under mp_vid on the same origin).
 const lsGet = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
-const ME = new Set(lsGet('mp_admin_me', []));
-const NAMES = lsGet('mp_admin_names', {});
+// Your own devices ("me") and names are stored on the server, so every admin browser and the
+// Telegram alert agree. They are rebuilt from each stats load.
+let ME = new Set(), NAMES = {};
 let INCLUDE_ME = !!lsGet('mp_admin_incl', false);
-try {
-  const own = localStorage.getItem('mp_vid');
-  if (own && lsGet('mp_admin_auto', null) !== own) { ME.add(own); lsSet('mp_admin_me', [...ME]); lsSet('mp_admin_auto', own); }
-} catch {}
+let SEEN = null;              // visitor ids already on screen, for the in-page alert
+const IST = 'Asia/Kolkata';
+const istDay = t => new Date(t).toLocaleDateString('en-CA', { timeZone: IST });
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtNum = n => (n || 0).toLocaleString('en-IN');
@@ -198,10 +208,9 @@ function fmtDur(sec) {
 }
 function fmtTime(iso) {
   if (!iso) return '—';
-  const d = new Date(iso), now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  return d.toLocaleString('en-IN', sameDay ? { hour: '2-digit', minute: '2-digit' }
-    : { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const sameDay = istDay(iso) === istDay(Date.now());
+  return new Date(iso).toLocaleString('en-IN', sameDay ? { timeZone: IST, hour: 'numeric', minute: '2-digit' }
+    : { timeZone: IST, day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 }
 function ago(iso) {
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
@@ -220,7 +229,7 @@ function tags(r) {
   if (DATA.online.some(o => o.visitor_id === r.visitor_id)) t += '<span class="tag live">Online</span>';
   if (v.first_seen && Date.now() - Date.parse(v.first_seen) < 86400e3) t += '<span class="tag new">New</span>';
   else if ((v.visits || 0) > 1) t += '<span class="tag back">Returning</span>';
-  if (DATA.yourIp && r.ip === DATA.yourIp) t += '<span class="tag net" title="Same internet connection as this browser, so it could be another of your devices">Your network</span>';
+  if (DATA.yourIp && r.ip === DATA.yourIp) t += '<span class="tag net" title="Same IP address as the browser you are using now. Mobile networks share one IP among many people, so this is a hint, not proof.">Same network as you</span>';
   return t;
 }
 const who = r => {
@@ -231,15 +240,17 @@ const who = r => {
 const actions = r => `<button class="act" data-me="${esc(r.visitor_id)}">${ME.has(r.visitor_id) ? 'Not me' : 'This is me'}</button> `
   + `<button class="act" data-name="${esc(r.visitor_id)}">${NAMES[r.visitor_id] ? 'Rename' : 'Name'}</button>`;
 const pages = p => (Array.isArray(p) ? p : []).map(x => `<span class="chip">${esc(x)}</span>`).join('') || '<span class="dim">—</span>';
-function refHost(r) {
-  if (!r) return '<span class="dim">Direct</span>';
-  try { return esc(new URL(r).hostname.replace(/^www\./, '')); } catch { return esc(r.slice(0, 40)); }
+// No referrer (or our own site) = typed, bookmarked, or opened from an app like WhatsApp — browsers don't say which.
+function srcHost(r) {
+  if (!r) return null;
+  try { const h = new URL(r).hostname.replace(/^www\./, ''); return h === location.hostname.replace(/^www\./, '') ? null : h; }
+  catch { return r.slice(0, 40); }
 }
+const refHost = r => srcHost(r) ? esc(srcHost(r)) : '<span class="dim">Direct / app</span>';
 
 async function load() {
   let r;
-  const q = !INCLUDE_ME && ME.size ? '?exclude=' + encodeURIComponent([...ME].join(',')) : '';
-  try { r = await fetch('/api/admin/stats' + q, { cache: 'no-store' }); }
+  try { r = await fetch('/api/admin/stats' + (INCLUDE_ME ? '?include_me=1' : ''), { cache: 'no-store' }); }
   catch { $('banner').innerHTML = '<div class="err">Server unreachable — is the site waking up? Retrying in 30s.</div>'; return; }
   if (r.status === 401) {
     const j = await r.json().catch(() => ({}));
@@ -251,12 +262,88 @@ async function load() {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { $('banner').innerHTML = `<div class="err">${esc(j.error || 'Could not load stats.')}</div>`; return; }
   DATA = j;
+  ME = new Set(j.visitors.filter(v => v.owner).map(v => v.visitor_id));
+  NAMES = Object.fromEntries(j.visitors.filter(v => v.label).map(v => [v.visitor_id, v.label]));
+  if (await syncThisBrowser()) return load();
   $('login-view').style.display = 'none'; $('dash').style.display = '';
-  $('banner').innerHTML = j.storage === 'local-file'
-    ? '<div class="warn">Storage: local file. Fine for testing, but on Render this data is wiped on every restart. Set SUPABASE_URL and SUPABASE_SERVICE_KEY to keep it permanently.</div>' : '';
+  $('banner').innerHTML = (j.storage === 'local-file'
+    ? '<div class="warn">Storage: local file. Fine for testing, but on Render this data is wiped on every restart. Set SUPABASE_URL and SUPABASE_SERVICE_KEY to keep it permanently.</div>' : '')
+    + (j.labelsError ? `<div class="err">Can't save “This is me” / names yet: ${esc(j.labelsError)}</div>` : '');
+  alertInPage();
   $('updated').textContent = 'Updated ' + new Date(j.generatedAt).toLocaleTimeString('en-IN');
   $('incl').checked = INCLUDE_ME;
-  renderSummary(); renderPeople(); renderKpis(); renderChart(); renderTable();
+  renderSummary(); renderPeople(); renderKpis(); renderChart(); renderTable(); renderAlerts();
+}
+
+// This admin browser is yours: mark it (and any marks saved by the older, browser-only version) on the server.
+async function syncThisBrowser() {
+  let own = null; try { own = localStorage.getItem('mp_vid'); } catch {}
+  const ids = new Set(lsGet('mp_admin_me', []));
+  if (own && lsGet('mp_admin_synced', null) !== own) ids.add(own);
+  const todo = [...ids].filter(id => !ME.has(id)).map(id => ({ visitor_id: id, owner: true }))
+    .concat(Object.entries(lsGet('mp_admin_names', {})).map(([id, name]) => ({ visitor_id: id, name })));
+  if (!todo.length || DATA.labelsError) return false;
+  const ok = (await Promise.all(todo.map(b => postLabel(b)))).every(Boolean);
+  if (ok) { try { localStorage.removeItem('mp_admin_me'); localStorage.removeItem('mp_admin_names'); localStorage.removeItem('mp_admin_auto'); } catch {} if (own) lsSet('mp_admin_synced', own); }
+  return ok;
+}
+async function postLabel(body) {
+  const r = await fetch('/api/admin/label', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+  if (r && r.ok) return true;
+  const j = r ? await r.json().catch(() => ({})) : {};
+  $('banner').innerHTML = `<div class="err">Could not save: ${esc(j.error || 'network error')}</div>`;
+  return false;
+}
+
+// In-page alert: a desktop notification when a visitor id appears that wasn't on screen before.
+function alertInPage() {
+  const people = DATA.visitors.filter(v => !v.owner);
+  if (SEEN) {
+    const fresh = people.filter(v => !SEEN.has(v.visitor_id));
+    if (fresh.length && 'Notification' in window && Notification.permission === 'granted') {
+      for (const v of fresh.slice(0, 3)) new Notification('New visitor on MarketPulse', { body: `${label(v)} — ${place(v)}`, tag: v.visitor_id });
+    }
+  }
+  SEEN = new Set(DATA.visitors.map(v => v.visitor_id));
+}
+async function enableDesktop() { if ('Notification' in window) await Notification.requestPermission(); renderAlerts(); }
+async function tgTest() {
+  $('tg-msg').textContent = 'Sending…';
+  const r = await fetch('/api/admin/alert-test', { method: 'POST' }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  $('tg-msg').textContent = r && r.ok ? 'Sent — check Telegram.' : (j.error || 'Network error.');
+}
+async function tgFind() {
+  $('tg-msg').textContent = 'Looking…';
+  const r = await fetch('/api/admin/telegram-chats', { cache: 'no-store' }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !r.ok) { $('tg-msg').textContent = j.error || 'Network error.'; return; }
+  $('tg-msg').innerHTML = j.chats.length
+    ? 'Found: ' + j.chats.map(c => `<b>${esc(c.name || c.username || 'chat')}</b> → <code>${esc(c.id)}</code>`).join(' · ') + ' — use your own one as TELEGRAM_CHAT_ID.'
+    : 'No messages yet. Open your bot in Telegram, send <code>/start</code>, then click again.';
+}
+function renderAlerts() {
+  const tg = DATA.alerts.telegram;
+  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  $('alerts').innerHTML = `<h2>New-visitor alerts</h2>
+    <div class="sub">You're alerted once per new browser — the first time someone ever opens the site. Your own devices never trigger it.</div>
+    <div class="row"><span class="st ${tg === 'on' ? 'ok' : 'no'}">${tg === 'on' ? 'On' : 'Off'}</span><div style="flex:1">
+      <b>Telegram message to your phone</b> — works even when this page is closed.
+      ${tg === 'on' ? `<div class="msg"><button class="btn" onclick="tgTest()">Send a test message</button> <span id="tg-msg" class="dim"></span></div>`
+      : tg === 'no-chat' ? `<ol><li>In Telegram, open the bot you created and send <code>/start</code>.</li>
+          <li><button class="act" onclick="tgFind()">Find my chat ID</button> <span id="tg-msg" class="dim"></span></li>
+          <li>In Render → your service → <b>Environment</b>, add <code>TELEGRAM_CHAT_ID</code> = that number and save. The site restarts by itself.</li></ol>`
+      : `<ol><li>In Telegram, search <b>@BotFather</b>, send <code>/newbot</code>, pick any name. It replies with a <b>token</b>.</li>
+          <li>In Render → your service → <b>Environment</b>, add <code>TELEGRAM_BOT_TOKEN</code> = that token and save.</li>
+          <li>Come back here for the last step (your chat ID).</li></ol><span id="tg-msg"></span>`}
+    </div></div>
+    <div class="row"><span class="st ${perm === 'granted' ? 'ok' : 'no'}">${perm === 'granted' ? 'On' : 'Off'}</span><div style="flex:1">
+      <b>Pop-up on this computer</b> — only while this page is open in a tab.
+      <div class="msg">${perm === 'granted' ? '<span class="dim">The tab title also shows (1), (2)… when people are online.</span>'
+        : perm === 'denied' ? '<span class="dim">Blocked in this browser — allow notifications for this site in the address-bar settings.</span>'
+        : perm === 'unsupported' ? '<span class="dim">Not supported in this browser.</span>'
+        : '<button class="btn" onclick="enableDesktop()">Turn on pop-ups</button>'}</div>
+    </div></div>`;
 }
 
 // One card per person: who, where, how long, when, what they looked at.
@@ -266,10 +353,10 @@ const ICON = {
   Desktop: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
 };
 const PIN = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>';
-function refText(r) {
-  if (!r) return 'typed the link / shared link';
-  try { return new URL(r).hostname.replace(/^www\./, ''); } catch { return r.slice(0, 40); }
-}
+const SRC_TIP = 'No referring website: the link was typed, bookmarked, or opened from an app such as WhatsApp or Telegram. Browsers do not say which.';
+const refText = r => srcHost(r) ? esc(srcHost(r)) : `<span class="q" title="${SRC_TIP}">direct / app link</span>`;
+const TIME_TIP = 'Active time: the tab was visible and used in the last 5 minutes. Idle or background time is not counted.';
+const GEO_TIP = 'Worked out from the internet provider’s IP address. Usually the right city or a nearby one; can be off.';
 function card(v, cls) {
   const live = DATA.online.find(o => o.visitor_id === v.visitor_id);
   const statLast = live ? '<b style="color:var(--green)">Now</b>' : `<b>${ago(v.last_seen)}</b>`;
@@ -277,13 +364,13 @@ function card(v, cls) {
     <div class="pc-top"><div class="pc-ico">${ICON[v.device] || ICON.Desktop}</div>
       <div class="pc-name"><b title="${esc(v.visitor_id)}">${esc(label(v))}</b><span>${esc([v.os, v.browser].filter(Boolean).join(' · '))}</span></div></div>
     <div style="margin-top:6px">${tags(v)}</div>
-    <div class="pc-loc">${PIN}<span>${esc(place(v) === '—' ? 'Location unknown' : place(v))}${v.isp ? ` <span class="dim">· ${esc(v.isp)}</span>` : ''}</span></div>
+    <div class="pc-loc">${PIN}<span>${place(v) === '—' ? 'Location unknown' : `${esc(place(v))} <span class="dim q" title="${GEO_TIP}">approx.</span>`}${v.isp ? ` <span class="dim">· ${esc(v.isp)}</span>` : ''}</span></div>
     <div class="pc-stats">
-      <div><span>Time spent</span><b>${fmtDur(v.total_sec)}</b></div>
+      <div title="${TIME_TIP}"><span>Active time</span><b>${fmtDur(v.total_sec)}</b></div>
       <div><span>Visits</span><b>${fmtNum(v.visits)}</b></div>
       <div><span>Last seen</span>${statLast}</div>
     </div>
-    <div class="pc-foot">${live ? `On the site for <b>${fmtDur(live.duration_sec)}</b> this visit · ` : ''}First came <b>${fmtTime(v.first_seen)}</b> · via ${esc(refText(v.referrer))}</div>
+    <div class="pc-foot">${live ? `On the site for <b>${fmtDur(live.duration_sec)}</b> this visit · ` : ''}First visit <b>${fmtTime(v.first_seen)}</b> · Came from ${refText(v.referrer)}</div>
     ${v.pages && v.pages.length ? `<div class="pc-pages">${pages(v.pages)}</div>` : ''}
     <div class="pc-act">${actions(v)}</div>
   </div>`;
@@ -312,9 +399,9 @@ function renderSummary() {
   const seen = new Set();
   const online = DATA.online.filter(others).filter(r => !seen.has(r.visitor_id) && seen.add(r.visitor_id));
   const people = DATA.visitors.filter(others);
-  const todayStr = new Date().toDateString();
-  const today = people.filter(v => new Date(v.last_seen).toDateString() === todayStr);
-  const newToday = people.filter(v => new Date(v.first_seen).toDateString() === todayStr);
+  const todayStr = istDay(Date.now());
+  const today = people.filter(v => istDay(v.last_seen) === todayStr);
+  const newToday = people.filter(v => istDay(v.first_seen) === todayStr);
   const last = people[0];
   document.title = online.length ? `(${online.length}) MarketPulse Admin` : 'MarketPulse Admin';
   $('summary').className = 'summary' + (online.length ? ' on' : '');
@@ -326,7 +413,8 @@ function renderSummary() {
     + ` (<b>${newToday.length}</b> new)`
     + (last ? ` · Last visitor: <b>${esc(label(last))}</b>${where(last, ', ')}, ${ago(last.last_seen)}` : ' · No visitors besides you yet')
     + `</div>`
-    + (ME.size ? '' : '<div class="line">Tip: click “This is me” on your own devices so they stop counting as visitors.</div>');
+    + `<div class="line">Alerts: ${DATA.alerts.telegram === 'on' ? '<b>Telegram on</b>' : 'Telegram off — <a href="#alerts" style="color:var(--accent)">set up</a>'}`
+    + ` · Your devices: <b>${ME.size}</b> (left out of all numbers)</div>`;
 }
 function toggleIncl() { INCLUDE_ME = $('incl').checked; lsSet('mp_admin_incl', INCLUDE_ME); load(); }
 
@@ -340,7 +428,7 @@ function renderKpis() {
     tile('Last 7 days', fmtNum(k.last7), 'unique visitors') +
     tile('Last 30 days', fmtNum(k.last30), 'unique visitors') +
     tile('All time', fmtNum(k.allTimeVisitors), `${fmtNum(k.allTimeVisits)} visits`) +
-    tile('Avg time / visit', fmtDur(k.avgSec30), 'last 30 days') +
+    tile('Avg active time', fmtDur(k.avgSec30), 'per visit, last 30 days') +
     tile('Accounts', fmtNum(k.registeredUsers), 'signed up');
 }
 
@@ -427,15 +515,12 @@ function renderTable() {
 $('dash').addEventListener('click', e => {
   const me = e.target.closest('[data-me]'), nm = e.target.closest('[data-name]');
   if (me) {
-    const id = me.dataset.me;
-    ME.has(id) ? ME.delete(id) : ME.add(id);
-    lsSet('mp_admin_me', [...ME]); load();
+    postLabel({ visitor_id: me.dataset.me, owner: !ME.has(me.dataset.me) }).then(ok => ok && load());
   } else if (nm) {
     const id = nm.dataset.name;
     const v = prompt('Name this visitor (e.g. "Rahul" or "My phone"). Leave empty to clear.', NAMES[id] || '');
     if (v === null) return;
-    v.trim() ? NAMES[id] = v.trim().slice(0, 40) : delete NAMES[id];
-    lsSet('mp_admin_names', NAMES); renderSummary(); renderPeople(); renderTable();
+    postLabel({ visitor_id: id, name: v.trim() || null }).then(ok => ok && load());
   }
 });
 $('tabs').addEventListener('click', e => {
