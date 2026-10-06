@@ -200,6 +200,14 @@ async function sb(pathAndQuery, opts = {}) {
 // re-run, fall back gracefully instead of failing.
 const missingFn = e => e.status === 404 || /PGRST202|Could not find the function/i.test(e.body || e.message);
 const missingCol = (e, col) => /PGRST204|42703/.test(e.body || '') && (e.body || '').includes(col);
+// PostgREST finds a function by its argument NAMES, so these must match supabase-setup.sql exactly
+// (tests/visitor-stats.test.js checks it); a missing one makes the call 404 and the dashboard falls back.
+const RPC_ARGS = {
+  mp_overview: p => ({ p_from: p.from, p_to: p.to, p_prev_from: p.prevFrom, p_prev_to: p.prevTo,
+    p_include_me: p.includeMe, p_bucket: p.bucket }),
+  mp_visitor_list: p => ({ p_from: p.from, p_to: p.to, p_include_me: p.includeMe, p_limit: p.limit, p_offset: p.offset }),
+};
+let fallbackWarned = 0;
 let hasSourceCol = true;
 const inList = ids => `(${ids.filter(id => ID_RE.test(id)).join(',')})`;
 const sbStore = {
@@ -223,12 +231,10 @@ const sbStore = {
     return r.length > 0;
   },
   async overview(p) {
-    return sb('rpc/mp_overview', { method: 'POST', timeoutMs: 20000, body: JSON.stringify({
-      p_from: p.from, p_to: p.to, p_prev_from: p.prevFrom, p_include_me: p.includeMe, p_bucket: p.bucket }) });
+    return sb('rpc/mp_overview', { method: 'POST', timeoutMs: 20000, body: JSON.stringify(RPC_ARGS.mp_overview(p)) });
   },
   async visitorList(p) {
-    return sb('rpc/mp_visitor_list', { method: 'POST', timeoutMs: 20000, body: JSON.stringify({
-      p_from: p.from, p_to: p.to, p_include_me: p.includeMe, p_limit: p.limit, p_offset: p.offset }) });
+    return sb('rpc/mp_visitor_list', { method: 'POST', timeoutMs: 20000, body: JSON.stringify(RPC_ARGS.mp_visitor_list(p)) });
   },
   async visitsInRange({ from, to, owners, limit }) {
     const out = [], not = owners.length ? `&visitor_id=not.in.${inList(owners)}` : '';
@@ -603,6 +609,7 @@ async function periodStats(r, includeMe) {
     return { ov, list, engine: USE_SB ? 'database' : 'local', partial: false };
   } catch (e) {
     if (!(USE_SB && missingFn(e))) throw e;
+    if (Date.now() - fallbackWarned > 10 * 60e3) { fallbackWarned = Date.now(); console.warn('[visitors] dashboard SQL functions unavailable, using fallback:', e.message); }
     const rows = await store.allVisits(FALLBACK_MAX), own = new Set(ownerIds());
     return { ov: stats.overview(rows, own, p), list: stats.visitorList(rows, own, LABELS, { ...p, limit: 60, offset: 0 }),
       engine: 'fallback', partial: rows.length >= FALLBACK_MAX, rows };
@@ -784,4 +791,4 @@ if (!USE_SB) console.log('[visitors] storage: local file .data/visitors.json (se
 if (!ADMIN_PASSWORD) console.log('[visitors] ADMIN_PASSWORD not set — /admin is open to localhost only');
 loadLabels();
 
-module.exports = { handle, flush, parseUA, hashPassword, checkPassword, sign, verify };
+module.exports = { handle, flush, parseUA, hashPassword, checkPassword, sign, verify, RPC_ARGS };

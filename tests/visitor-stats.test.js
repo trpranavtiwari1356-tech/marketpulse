@@ -110,6 +110,24 @@ describe('visitor list', () => {
   });
 });
 
+// The server calls the SQL functions through PostgREST, which matches them by argument NAME — one
+// missing or misspelt name and the call 404s (the dashboard then silently falls back).
+describe('server RPC calls match the SQL function signatures', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'supabase-setup.sql'), 'utf8');
+  const { RPC_ARGS } = require('../visitors');
+  const p = { from: 'a', to: 'b', prevFrom: 'c', prevTo: 'd', includeMe: false, bucket: 'day', limit: 1, offset: 0 };
+  for (const fn of Object.keys(RPC_ARGS)) {
+    test(fn, () => {
+      const m = sql.match(new RegExp(`create or replace function ${fn}\\(([\\s\\S]*?)\\)\\s*returns`));
+      assert.ok(m, `${fn} not found in supabase-setup.sql`);
+      const params = [...m[1].matchAll(/\b(p_[a-z_]+)\s/g)].map(x => x[1]).sort();
+      const sent = Object.keys(RPC_ARGS[fn](p)).sort();
+      assert.deepEqual(sent, params);
+      for (const [k, v] of Object.entries(RPC_ARGS[fn](p))) assert.notEqual(v, undefined, `${k} is undefined`);
+    });
+  }
+});
+
 // ─────────── SQL parity ───────────
 let PGlite = null;
 try { ({ PGlite } = require(path.join(process.env.PGLITE_PATH || '/nonexistent', 'node_modules', '@electric-sql', 'pglite'))); } catch {}
@@ -158,7 +176,10 @@ describe('supabase-setup.sql matches visitor-stats.js', { skip: !PGlite && 'set 
   ];
   for (const [name, from, to, prevFrom, prevTo, bucket] of ranges) for (const includeMe of [false, true]) {
     test(`mp_overview — ${name}${includeMe ? ', incl. you' : ''}`, async () => {
-      const r = await db.query('select mp_overview($1, $2, $3, $4, $5, $6) as j', [from, to, prevFrom, prevTo, includeMe, bucket]);
+      // call by NAME with exactly the arguments the server sends, the way PostgREST does
+      const args = require('../visitors').RPC_ARGS.mp_overview({ from, to, prevFrom, prevTo, includeMe, bucket });
+      const names = Object.keys(args);
+      const r = await db.query(`select mp_overview(${names.map((k, i) => `${k} => $${i + 1}`).join(', ')}) as j`, Object.values(args));
       const sql = r.rows[0].j, js = S.overview(data, new Set(ownerIds), { from, to, prevFrom, prevTo, includeMe, bucket });
       assert.ok(js.cur.visits > 0);
       for (const k of ['cur', 'prev', 'series', 'alltime']) assert.deepEqual(norm(sql[k]), norm(js[k]), k);
@@ -167,7 +188,9 @@ describe('supabase-setup.sql matches visitor-stats.js', { skip: !PGlite && 'set 
     });
     test(`mp_visitor_list — ${name}${includeMe ? ', incl. you' : ''}`, async () => {
       for (const [limit, offset] of [[50, 0], [50, 50], [500, 0]]) {
-        const r = await db.query('select mp_visitor_list($1, $2, $3, $4, $5) as j', [from, to, includeMe, limit, offset]);
+        const args = require('../visitors').RPC_ARGS.mp_visitor_list({ from, to, includeMe, limit, offset });
+        const names = Object.keys(args);
+        const r = await db.query(`select mp_visitor_list(${names.map((k, i) => `${k} => $${i + 1}`).join(', ')}) as j`, Object.values(args));
         const js = S.visitorList(data, new Set(ownerIds), labels, { from, to, includeMe, limit, offset });
         assert.deepEqual(norm(r.rows[0].j), norm(js), `limit ${limit} offset ${offset}`);
       }
