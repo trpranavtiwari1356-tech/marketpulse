@@ -7819,6 +7819,8 @@ fetch('/api/auth/me').then(r => r.json()).then(j => { acctUser = j.user; acctRen
 // Counts visits and ACTIVE time (tab visible + some input in the last 5 min) and sends the running
 // totals to /api/t every 30s. The browser owns the totals, so a server restart loses nothing.
 window.mpTrack = (function () {
+  // Automated browsers (test runners, scrapers) are not people — don't count them.
+  if (navigator.webdriver) return { page() {}, ping() {} };
   const rid = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '')
     : Math.random().toString(36).slice(2) + Date.now().toString(36));
   const get = (st, k) => { try { return st.getItem(k); } catch { return null; } };
@@ -7828,7 +7830,12 @@ window.mpTrack = (function () {
   // A session survives reloads in the same tab, but ends after 30 min of silence.
   let S = null;
   try { S = JSON.parse(get(sessionStorage, 'mp_sess') || 'null'); } catch {}
-  if (!S || Date.now() - (S.last || 0) > 30 * 60e3) S = { sid: rid(), t0: Date.now(), active: 0, pages: [] };
+  if (!S || Date.now() - (S.last || 0) > 30 * 60e3) {
+    // A link tag (?ref=whatsapp, or utm_source=…) says which share brought this visit in.
+    let src = '';
+    try { const q = new URLSearchParams(location.search); src = (q.get('ref') || q.get('utm_source') || q.get('src') || '').toLowerCase().slice(0, 40); } catch {}
+    S = { sid: rid(), t0: Date.now(), active: 0, pages: [], src };
+  }
   const save = () => { S.last = Date.now(); set(sessionStorage, 'mp_sess', JSON.stringify(S)); };
   let lastInput = Date.now();
   ['pointermove', 'keydown', 'scroll', 'touchstart', 'click'].forEach(ev =>
@@ -7836,7 +7843,7 @@ window.mpTrack = (function () {
   setInterval(() => {
     if (document.visibilityState === 'visible' && Date.now() - lastInput < 5 * 60e3) { S.active += 5; save(); }
   }, 5000);
-  const payload = () => JSON.stringify({ sid: S.sid, vid, t0: S.t0, active: S.active, pages: S.pages,
+  const payload = () => JSON.stringify({ sid: S.sid, vid, t0: S.t0, active: S.active, pages: S.pages, src: S.src || '',
     ref: document.referrer || '', screen: screen.width + 'x' + screen.height, lang: navigator.language,
     tz: (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || '' });
   let sentActive = -1;
@@ -7853,7 +7860,9 @@ window.mpTrack = (function () {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') ping(false); });
   const first = (location.hash || '#home').slice(1);
   if (/^[a-z]{1,20}$/.test(first) && !S.pages.includes(first)) S.pages.push(first);
-  setTimeout(() => ping(true), 1500);
+  // A page Chrome pre-renders in the background only counts once the person actually opens it.
+  const start = () => setTimeout(() => ping(true), 1500);
+  if (document.prerendering) document.addEventListener('prerenderingchange', start, { once: true }); else start();
   return {
     page(id) { if (/^[a-z]{1,20}$/.test(id) && !S.pages.includes(id)) { S.pages.push(id); save(); ping(true); } },
     ping: () => ping(true),

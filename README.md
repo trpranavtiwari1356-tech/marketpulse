@@ -125,9 +125,23 @@ The universe uses NSE symbols (`.NS`). Occasionally Yahoo drops one (shown as "n
 that's surfaced explicitly rather than hidden.
 
 ## Visitor analytics, accounts & the admin dashboard
-`/admin` is a private dashboard: people online now, visitors today/yesterday/7d/30d/all-time,
-a 30-day daily chart, time spent per visit and per visitor, pages opened, approximate location
-(from IP), device/browser, where they came from, and the list of signed-up accounts.
+`/admin` is a private dashboard. Pick a period (today, yesterday, 7 / 30 / 90 days, all time) and
+everything on the page follows it:
+
+- **On the site now** — one card per person, marked *first visit* or *returning*.
+- **Headline numbers** — visitors, new visitors, visits, average active time, engaged visits,
+  each compared with the same window one period earlier (today so far vs yesterday to the same time).
+- **Visitors by hour / day** — new vs returning, with a table view.
+- **Latest visitors** — cards with place, active time, visits, last seen, source and sections.
+- **Breakdowns** — traffic sources, locations, devices and sections viewed.
+- **Tables** — visitors, visits and accounts. Every table and breakdown has a **CSV download**
+  (visits, visitors and accounts download complete from the server, not just the rows on screen).
+- **Tracking links** — make `/?ref=name` links so each place you share the site shows up by name.
+
+Definitions (what a visitor, visit, active time, etc. mean) are listed at the bottom of the page.
+Days and times are Indian Standard Time. Your own devices are marked **This is me** (any browser
+signed in to `/admin` is marked automatically) and are left out of every number.
+
 Visitors can optionally create an account (name + email + password, scrypt-hashed) from the
 **Sign in** button in the nav; their visits then show with their name.
 
@@ -139,14 +153,14 @@ Set these environment variables on the host (Render → your service → Environ
 | `SUPABASE_URL` | Supabase project URL (Project Settings → API). |
 | `SUPABASE_SERVICE_KEY` | Supabase **secret / service_role** key — server-only, never put it in the HTML. |
 | `SESSION_SECRET` | Optional. Any long random string; otherwise derived from `ADMIN_PASSWORD`. |
-| `TELEGRAM_BOT_TOKEN` | Optional. Bot token from @BotFather — enables a Telegram message for every new visitor. |
-| `TELEGRAM_CHAT_ID` | Optional. Your chat id; `/admin` → *New-visitor alerts* → **Find my chat ID** shows it. |
 
-Your own devices are marked **This is me** on `/admin` (any browser signed in to `/admin` is
-marked automatically) and are left out of every count and alert. Marks and names are stored in
-the `visitor_labels` table.
+Run `supabase-setup.sql` in Supabase's SQL editor once, and again after updates (it is safe to
+re-run). It creates the tables and the `mp_overview` / `mp_visitor_list` functions that compute the
+dashboard inside Postgres, so the numbers stay exact and fast however much traffic arrives. Until it
+has been run, `/admin` says so and falls back to computing from the newest 50,000 visits. Without
+Supabase the data goes to `.data/visitors.json`, which is fine locally but wiped on every Render
+restart.
 
-Create the tables once by running `supabase-setup.sql` in Supabase's SQL editor (re-run it after
-updates; it is safe to re-run). Without
-Supabase the data goes to `.data/visitors.json`, which is fine locally but wiped on every
-Render restart.
+The SQL functions and `visitor-stats.js` (used locally and as the fallback) implement the same
+definitions; `tests/visitor-stats.test.js` checks they agree. To include that check, point
+`PGLITE_PATH` at a folder with `@electric-sql/pglite` installed (it runs Postgres in-process).

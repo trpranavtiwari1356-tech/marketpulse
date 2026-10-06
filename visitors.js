@@ -13,6 +13,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const stats = require('./visitor-stats');   // dashboard maths (the JS twin of the SQL functions)
 
 // Dashboard copy-paste picks up junk surprisingly often: wrapping quotes, a pasted `NAME=` prefix,
 // zero-width characters from rich-text copies. Strip all of it rather than fail with "Invalid API key".
@@ -26,8 +27,6 @@ const SB_URL = cleanEnv(process.env.SUPABASE_URL).replace(/\/(rest\/v1)?\/*$/, '
 const SB_KEY = cleanEnv(process.env.SUPABASE_SERVICE_KEY);
 const USE_SB = /^https:\/\/\S+$/.test(SB_URL) && SB_KEY.length > 20;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
-const TG_TOKEN = cleanEnv(process.env.TELEGRAM_BOT_TOKEN);   // new-visitor alerts (optional)
-const TG_CHAT = cleanEnv(process.env.TELEGRAM_CHAT_ID);
 
 // Cookie-signing secret. SESSION_SECRET wins; otherwise derive a stable one from the admin
 // password so logins survive a restart without a second env var. Only with neither set does it
@@ -93,7 +92,7 @@ function makeLimiter(limit, windowMs) {
   };
 }
 const authLimited = makeLimiter(10, 60e3);      // sign-in / sign-up / admin login attempts
-const trackLimited = makeLimiter(120, 60e3);    // tracker pings (one tab sends ~2/min)
+const trackLimited = makeLimiter(600, 60e3);    // tracker pings: a tab sends ~2/min; mobile carriers put many people behind one IP
 
 // ─────────── signed tokens (HMAC) for the user + admin cookies ───────────
 const b64u = s => Buffer.from(s).toString('base64url');
@@ -189,20 +188,59 @@ async function sb(pathAndQuery, opts = {}) {
   const headers = { apikey: SB_KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (SB_KEY.startsWith('eyJ')) headers.Authorization = 'Bearer ' + SB_KEY;   // legacy JWT-style keys
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 10000);
+  const t = setTimeout(() => ctrl.abort(), opts.timeoutMs || 10000);
   try {
     const r = await fetch(`${SB_URL}/rest/v1/${pathAndQuery}`, { ...opts, headers, signal: ctrl.signal });
     const text = await r.text();
-    if (!r.ok) throw new Error(`Supabase ${r.status}: ${text.slice(0, 200)}`);
+    if (!r.ok) { const e = new Error(`Supabase ${r.status}: ${text.slice(0, 200)}`); e.status = r.status; e.body = text; throw e; }
     return text ? JSON.parse(text) : null;
   } finally { clearTimeout(t); }
 }
+// The dashboard functions / newer columns arrive with supabase-setup.sql. Until it has been
+// re-run, fall back gracefully instead of failing.
+const missingFn = e => e.status === 404 || /PGRST202|Could not find the function/i.test(e.body || e.message);
+const missingCol = (e, col) => /PGRST204|42703/.test(e.body || '') && (e.body || '').includes(col);
+let hasSourceCol = true;
+const inList = ids => `(${ids.filter(id => ID_RE.test(id)).join(',')})`;
 const sbStore = {
   async upsertVisits(rows) {
-    await sb('visits?on_conflict=id', { method: 'POST', body: JSON.stringify(rows),
-      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
+    for (let i = 0; i < rows.length; i += 500) {
+      let chunk = rows.slice(i, i + 500);
+      if (!hasSourceCol) chunk = chunk.map(({ source, ...r }) => r);
+      try {
+        await sb('visits?on_conflict=id', { method: 'POST', body: JSON.stringify(chunk),
+          headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
+      } catch (e) {
+        if (!hasSourceCol || !missingCol(e, 'source')) throw e;
+        hasSourceCol = false;                    // old schema: keep tracking, drop the campaign tag
+        console.warn('[visitors] visits.source column missing — re-run supabase-setup.sql to record ?ref= tags');
+        i -= 500;                                // retry this chunk without it
+      }
+    }
   },
-  async allVisits(maxRows = 100000) {
+  async visitSeen(vid, exceptSid) {
+    const r = await sb(`visits?select=id&visitor_id=eq.${vid}&id=neq.${exceptSid}&limit=1`);
+    return r.length > 0;
+  },
+  async overview(p) {
+    return sb('rpc/mp_overview', { method: 'POST', timeoutMs: 20000, body: JSON.stringify({
+      p_from: p.from, p_to: p.to, p_prev_from: p.prevFrom, p_include_me: p.includeMe, p_bucket: p.bucket }) });
+  },
+  async visitorList(p) {
+    return sb('rpc/mp_visitor_list', { method: 'POST', timeoutMs: 20000, body: JSON.stringify({
+      p_from: p.from, p_to: p.to, p_include_me: p.includeMe, p_limit: p.limit, p_offset: p.offset }) });
+  },
+  async visitsInRange({ from, to, owners, limit }) {
+    const out = [], not = owners.length ? `&visitor_id=not.in.${inList(owners)}` : '';
+    for (let off = 0; off < limit; off += 1000) {
+      const page = await sb(`visits?select=*&started_at=gte.${encodeURIComponent(from)}&started_at=lt.${encodeURIComponent(to)}`
+        + `${not}&order=started_at.desc&limit=${Math.min(1000, limit - off)}&offset=${off}`);
+      out.push(...page);
+      if (page.length < 1000) break;
+    }
+    return out;
+  },
+  async allVisits(maxRows) {        // fallback only (before the SQL functions exist)
     const out = [];
     for (let off = 0; off < maxRows; off += 1000) {
       const page = await sb(`visits?select=*&order=started_at.desc&limit=1000&offset=${off}`);
@@ -230,15 +268,6 @@ const sbStore = {
   async listUsers() {
     return sb('users?select=id,name,email,created_at,last_login&order=created_at.desc&limit=5000');
   },
-  async visitorIds() {
-    const out = [];
-    for (let off = 0; off < 200000; off += 1000) {
-      const page = await sb(`visits?select=visitor_id&order=started_at.asc&limit=1000&offset=${off}`);
-      out.push(...page.map(r => r.visitor_id));
-      if (page.length < 1000) break;
-    }
-    return out;
-  },
   async labels() { return sb('visitor_labels?select=visitor_id,name,is_owner&limit=10000'); },
   async setLabel(row) {
     await sb('visitor_labels?on_conflict=visitor_id', { method: 'POST', body: JSON.stringify([row]),
@@ -252,7 +281,7 @@ let fileDb = null, fileTimer = null;
 function db() {
   if (!fileDb) {
     try { fileDb = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch { fileDb = {}; }
-    fileDb.visits = fileDb.visits || {}; fileDb.users = fileDb.users || [];
+    fileDb.visits = fileDb.visits || {}; fileDb.users = fileDb.users || []; fileDb.labels = fileDb.labels || {};
   }
   return fileDb;
 }
@@ -264,9 +293,20 @@ function saveSoon() {
     catch (e) { console.error('[visitors] local save failed:', e.message); }
   }, 1000);
 }
+const fileVisits = () => Object.values(db().visits);
+const fileLabels = () => new Map(Object.values(db().labels).map(l => [l.visitor_id, { name: l.name, owner: !!l.is_owner }]));
+const fileOwners = () => new Set([...fileLabels()].filter(([, l]) => l.owner).map(([id]) => id));
 const fileStore = {
   async upsertVisits(rows) { const d = db(); for (const r of rows) d.visits[r.id] = { ...d.visits[r.id], ...r }; saveSoon(); },
-  async allVisits() { return Object.values(db().visits).sort((a, b) => (a.started_at < b.started_at ? 1 : -1)); },
+  async visitSeen(vid, exceptSid) { return fileVisits().some(v => v.visitor_id === vid && v.id !== exceptSid); },
+  async overview(p) { return stats.overview(fileVisits(), fileOwners(), p); },
+  async visitorList(p) { return stats.visitorList(fileVisits(), fileOwners(), fileLabels(), p); },
+  async visitsInRange({ from, to, owners, limit }) {
+    const F = Date.parse(from), T = Date.parse(to), own = new Set(owners);
+    return fileVisits().filter(v => { const t = Date.parse(v.started_at); return t >= F && t < T && !own.has(v.visitor_id); })
+      .sort((a, b) => (a.started_at < b.started_at ? 1 : -1)).slice(0, limit);
+  },
+  async allVisits() { return fileVisits(); },
   async userByEmail(email) { return db().users.find(u => u.email === email) || null; },
   async createUser(u) {
     const d = db(), row = { id: (d.users.reduce((m, x) => Math.max(m, x.id), 0) + 1), created_at: new Date().toISOString(), last_login: null, ...u };
@@ -277,122 +317,105 @@ const fileStore = {
   async listUsers() {
     return db().users.map(({ pass_hash, ...rest }) => rest).sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
   },
-  async visitorIds() { return Object.values(db().visits).map(v => v.visitor_id); },
-  async labels() { return Object.values(db().labels || {}); },
-  async setLabel(row) { const d = db(); d.labels = d.labels || {}; d.labels[row.visitor_id] = row; saveSoon(); },
+  async labels() { return Object.values(db().labels); },
+  async setLabel(row) { db().labels[row.visitor_id] = row; saveSoon(); },
 };
 const store = USE_SB ? sbStore : fileStore;
 
-// ─────────── visitor details: IP → place, user-agent → device ───────────
-const geoCache = new Map();
-async function geoLookup(ip) {
-  if (!ip || isLoopback(ip) || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|fc|fd|fe80)/i.test(ip)) return {};
-  if (geoCache.has(ip)) return geoCache.get(ip);
-  let g = {};
+// ─────────── visitor details: IP → place (batched), user-agent → device ───────────
+// ip-api.com (free, no key) allows 15 batch calls a minute of up to 100 IPs each, so lookups are
+// queued and sent together — enough for ~1,500 new IPs a minute. Results are cached per IP; a
+// failed lookup is retried a few minutes later (the visit row is updated when it lands).
+const isPrivateIp = ip => !ip || isLoopback(ip) || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|169\.254\.|fc|fd|fe80)/i.test(ip);
+const geoCache = new Map();      // ip -> { g, at, ok }
+const geoWaiting = new Map();    // ip -> [resolve]
+let geoTimer = null, geoLastRun = 0, geoPauseUntil = 0;
+function geoLookup(ip) {
+  if (isPrivateIp(ip)) return Promise.resolve({});
+  const c = geoCache.get(ip);
+  if (c && Date.now() - c.at < (c.ok ? 7 * 86400e3 : 3 * 60e3)) return Promise.resolve(c.g);
+  return new Promise(resolve => {
+    if (geoWaiting.has(ip)) geoWaiting.get(ip).push(resolve); else geoWaiting.set(ip, [resolve]);
+    if (!geoTimer) geoTimer = setTimeout(runGeo, Math.max(800, geoLastRun + 4100 - Date.now(), geoPauseUntil - Date.now()));
+  });
+}
+async function runGeo() {
+  geoTimer = null; geoLastRun = Date.now();
+  const ips = [...geoWaiting.keys()].slice(0, 100);
+  let byIp = null;
   try {
-    // ip-api.com: free, no key, 45 lookups/min — we call it once per new visit, not per ping.
-    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 3000);
-    const r = await fetch(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,regionName,city,isp`, { signal: ctrl.signal });
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 6000);
+    const r = await fetch('http://ip-api.com/batch?fields=status,query,country,regionName,city,isp', {
+      method: 'POST', body: JSON.stringify(ips), headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal });
     clearTimeout(t);
-    const j = await r.json();
-    if (j.status === 'success') g = { country: j.country, region: j.regionName, city: j.city, isp: j.isp };
+    const left = r.headers.get('x-rl'), ttl = +r.headers.get('x-ttl') || 60;
+    if (r.status === 429 || left === '0') geoPauseUntil = Date.now() + ttl * 1000;
+    if (r.ok) byIp = new Map((await r.json()).map(j => [j.query, j]));
   } catch { /* geo is best-effort */ }
-  if (geoCache.size > 2000) geoCache.clear();
-  geoCache.set(ip, g);
-  return g;
+  for (const ip of ips) {
+    const j = byIp && byIp.get(ip), ok = !!(j && j.status === 'success');
+    const g = ok ? { country: j.country || null, region: j.regionName || null, city: j.city || null, isp: j.isp || null } : {};
+    geoCache.set(ip, { g, at: Date.now(), ok });
+    (geoWaiting.get(ip) || []).forEach(f => f(g));
+    geoWaiting.delete(ip);
+  }
+  if (geoCache.size > 20000) geoCache.clear();
+  if (geoWaiting.size && !geoTimer) geoTimer = setTimeout(runGeo, Math.max(4100, geoPauseUntil - Date.now()));
 }
 function parseUA(ua) {
   ua = ua || '';
   const os = /Windows NT/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iPhone|iPad|iPod/.test(ua) ? 'iOS'
     : /Mac OS X/.test(ua) ? 'macOS' : /CrOS/.test(ua) ? 'ChromeOS' : /Linux/.test(ua) ? 'Linux' : 'Other';
   const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\/|Opera/.test(ua) ? 'Opera' : /SamsungBrowser/.test(ua) ? 'Samsung Internet'
-    : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Other';
-  const device = /iPad|Tablet/.test(ua) ? 'Tablet' : /Mobi|Android|iPhone/.test(ua) ? 'Mobile' : 'Desktop';
-  const bot = /bot|crawl|spider|slurp|headless|lighthouse/i.test(ua);
+    : /Firefox\/|FxiOS/.test(ua) ? 'Firefox' : /Chrome\/|CriOS/.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Other';
+  const device = /iPad|Tablet/.test(ua) || (/Android/.test(ua) && !/Mobi/.test(ua)) ? 'Tablet' : /Mobi|Android|iPhone/.test(ua) ? 'Mobile' : 'Desktop';
+  const bot = /bot|crawl|spider|slurp|headless|lighthouse|preview|facebookexternalhit|embedly|quora link|pingdom|uptime/i.test(ua);
   return { os, browser, device, bot };
 }
 
 // ─────────── your own devices + names (table visitor_labels) ───────────
 // Marking is stored on the server so every admin browser — and the new-visitor alert — agrees.
 const LABELS = new Map();        // visitor_id -> { name, owner }
-let labelsP = null, labelsError = null, labelsTried = 0;
+let labelsP = null, labelsLoaded = false, labelsError = null, labelsTried = 0;
 function loadLabels() {
   if (labelsP) return labelsP;
-  if (labelsError && Date.now() - labelsTried < 60e3) return Promise.resolve();   // don't hammer a missing table
+  if (labelsLoaded || (labelsError && Date.now() - labelsTried < 60e3)) return Promise.resolve();
   labelsTried = Date.now();
   labelsP = store.labels().then(rows => {
     LABELS.clear();
     for (const r of rows || []) LABELS.set(r.visitor_id, { name: r.name || null, owner: !!r.is_owner });
-    labelsError = null;
+    labelsError = null; labelsLoaded = true;
   }).catch(e => {
     labelsError = /visitor_labels|PGRST205|404/.test(e.message)
       ? 'The visitor_labels table is missing in Supabase. Re-run supabase-setup.sql (SQL Editor → paste → Run).'
       : e.message;
-    labelsP = null;
-  });
+  }).finally(() => { labelsP = null; });
   return labelsP;
 }
 const isOwner = vid => !!(LABELS.get(vid) || {}).owner;
+const ownerIds = () => [...LABELS].filter(([, l]) => l.owner).map(([id]) => id);
 async function setLabel(vid, patch) {
   await loadLabels();
   const cur = LABELS.get(vid) || { name: null, owner: false };
   const next = { ...cur, ...patch };
   await store.setLabel({ visitor_id: vid, name: next.name, is_owner: next.owner, updated_at: new Date().toISOString() });
   LABELS.set(vid, next);
+  statsCache.clear();
 }
 
-// ─────────── new-visitor alerts (Telegram) ───────────
-// "New" = a browser id never stored before. Known ids are read once per boot and then kept in memory.
-let knownP = null;
-function knownVisitors() {
-  if (!knownP) knownP = store.visitorIds().then(ids => new Set(ids)).catch(e => { knownP = null; throw e; });
-  return knownP;
-}
-const ownerIps = new Map();      // ip -> last time one of your devices / an admin session used it
-const alertTimes = [];
-const tgReady = () => !!(TG_TOKEN && TG_CHAT);
-async function telegram(text, chatId = TG_CHAT) {
-  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 8000);
-  try {
-    const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, { method: 'POST', signal: ctrl.signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true }) });
-    const j = await r.json().catch(() => ({}));
-    if (!j.ok) throw new Error(j.description || 'Telegram HTTP ' + r.status);
-  } finally { clearTimeout(t); }
-}
-const htmlEsc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-function sourceText(ref, host) {
-  if (!ref) return 'direct link (typed, bookmark, or an app like WhatsApp)';
-  try { const h = new URL(ref).hostname.replace(/^www\./, ''); return h === host ? 'direct link (typed, bookmark, or an app like WhatsApp)' : h; }
-  catch { return ref.slice(0, 60); }
-}
-function alertText(row, origin) {
-  const host = origin.replace(/^https?:\/\//, '');
-  const kind = row.device === 'Mobile' ? `${row.os} phone` : row.device === 'Tablet' ? `${row.os} tablet` : `${row.os} computer`;
-  const place = [row.city, row.region, row.country].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(', ');
-  const when = new Date(row.started_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
-  const lines = [
-    '🆕 <b>New visitor on MarketPulse</b>',
-    `📱 ${htmlEsc(kind)} · ${htmlEsc(row.browser)}`,
-    `📍 ${place ? htmlEsc(place) + ' (approx., from IP)' : 'Location unknown'}${row.isp ? ' · ' + htmlEsc(row.isp) : ''}`,
-    `🔗 Came from: ${htmlEsc(sourceText(row.referrer, host))}`,
-    `🕐 ${htmlEsc(when)} IST`,
-  ];
-  if (ownerIps.has(row.ip)) lines.push('⚠️ Same internet connection as one of your devices — this could be you on a new browser. Tap “This is me” on the dashboard if so.');
-  lines.push(`<a href="${htmlEsc(origin)}/admin">Open the dashboard</a>`);
-  return lines.join('\n');
-}
-async function maybeAlert(row, seenBefore, admin, origin) {
-  if (await seenBefore) return;
-  await loadLabels();
-  if (admin || isOwner(row.visitor_id) || !tgReady()) return;
-  const now = Date.now();
-  while (alertTimes.length && now - alertTimes[0] > 3600e3) alertTimes.shift();
-  if (alertTimes.length >= 20) return;                                  // flood guard: max 20 alerts an hour
-  alertTimes.push(now);
-  try { await telegram(alertText(row, origin) + (alertTimes.length === 20 ? '\n\n(Alert limit reached — next alerts in up to an hour. Check the dashboard.)' : '')); }
-  catch (e) { console.error('[visitors] telegram alert failed:', e.message); }
+// ─────────── first-ever visit? ───────────
+// "First visit" = this browser id has no earlier visit stored. Checked once per session with an
+// indexed lookup; ids seen since boot are remembered so repeat checks cost nothing.
+const seenVids = new Set();
+const newChecks = new Map();     // vid -> Promise<boolean seenBefore>, shared by tabs opening at once
+function seenBefore(vid, sid) {
+  if (seenVids.has(vid)) return Promise.resolve(true);
+  if (newChecks.has(vid)) return newChecks.get(vid).then(() => true);
+  const p = store.visitSeen(vid, sid).catch(() => true)      // when unsure, call it returning
+    .then(seen => { if (seenVids.size > 200000) seenVids.clear(); seenVids.add(vid); return seen; })
+    .finally(() => newChecks.delete(vid));
+  newChecks.set(vid, p);
+  return p;
 }
 function publicOrigin(req) {
   if (process.env.RENDER_EXTERNAL_URL) return process.env.RENDER_EXTERNAL_URL.replace(/\/+$/, '');
@@ -403,10 +426,20 @@ function publicOrigin(req) {
 // ─────────── live sessions: kept in memory, flushed to storage in batches ───────────
 // The browser sends its own running totals (start time, active seconds, pages seen), so a server
 // restart loses nothing — the next ping simply rebuilds the in-memory record.
-const live = new Map();          // sid -> visit row
+const live = new Map();          // sid -> visit row (only real table columns — it is upserted as-is)
+const meta = new Map();          // sid -> { first: true if this is the browser's first-ever visit }
+const geoBusy = new Set();       // sids with a place lookup in flight
 const dirty = new Set();
 const ID_RE = /^[a-z0-9]{8,40}$/i;
+const SRC_RE = /^[a-z0-9][a-z0-9._-]{0,39}$/;
 const clip = (s, n) => (typeof s === 'string' ? s.slice(0, n) : null);
+
+function fillGeo(sid, row, ip) {
+  geoBusy.add(sid);
+  return geoLookup(ip).then(g => {
+    if (g.country || g.city) Object.assign(row, { country: g.country, region: g.region, city: g.city, isp: g.isp });
+  }).finally(() => { geoBusy.delete(sid); dirty.add(sid); });
+}
 
 async function handleTrack(req, res, user) {
   const ip = clientIp(req);
@@ -422,11 +455,13 @@ async function handleTrack(req, res, user) {
   const isNew = !row;
   if (isNew) {
     const t0 = Number.isFinite(+b.t0) ? Math.min(now, Math.max(now - 24 * 3600e3, +b.t0)) : now;
+    const src = String(b.src || '').toLowerCase().slice(0, 40);
     row = {
       id: b.sid, visitor_id: b.vid, started_at: new Date(t0).toISOString(),
       ip, country: null, region: null, city: null, isp: null,
       device: ua.device, browser: ua.browser, os: ua.os,
       screen: clip(b.screen, 20), lang: clip(b.lang, 20), tz: clip(b.tz, 50), referrer: clip(b.ref, 300),
+      source: SRC_RE.test(src) ? src : null,
     };
     live.set(b.sid, row);
   }
@@ -439,22 +474,18 @@ async function handleTrack(req, res, user) {
   row.user_email = user ? user.e : (row.user_email || null);
 
   // A browser signed in to /admin is yours: remember it so it never counts as a visitor.
-  const admin = isAdmin(req);
-  if (admin || isOwner(b.vid)) ownerIps.set(ip, now);
-  if (admin && !isOwner(b.vid)) setLabel(b.vid, { owner: true }).catch(e => console.error('[visitors] auto-mark failed:', e.message));
+  if (isAdmin(req) && !isOwner(b.vid)) setLabel(b.vid, { owner: true }).catch(e => console.error('[visitors] auto-mark failed:', e.message));
 
   if (isNew) {
-    // Was this browser ever seen before? Decide now, before this session is written to storage.
-    const seenBefore = knownVisitors().then(set => { const had = set.has(b.vid); set.add(b.vid); return had; }).catch(() => true);
-    const origin = publicOrigin(req);
-    // Hold the first write until the place lookup lands so the stored row never has blank geo
-    // overwriting good geo (a restart re-creates the row from scratch).
-    geoLookup(ip).then(g => {
-      Object.assign(row, { country: g.country || null, region: g.region || null, city: g.city || null, isp: g.isp || null });
-      dirty.add(b.sid);
-      return maybeAlert(row, seenBefore, admin, origin);
-    }).catch(e => console.error('[visitors] new-session handling failed:', e.message));
-  } else dirty.add(b.sid);
+    // Decide "first-ever visit?" now, before this session is written; hold the first write until
+    // the place lookup lands so a stored row never has blank geo overwriting good geo.
+    meta.set(b.sid, { first: null });
+    seenBefore(b.vid, b.sid).then(was => meta.set(b.sid, { first: !was }));
+    fillGeo(b.sid, row, ip).catch(e => console.error('[visitors] place lookup failed:', e.message));
+  } else {
+    if (!row.country && !row.city && !isPrivateIp(ip) && !geoBusy.has(b.sid)) fillGeo(b.sid, row, ip);   // retry a failed lookup
+    else dirty.add(b.sid);
+  }
   return sendJson(res, 200, { ok: true });
 }
 
@@ -470,7 +501,7 @@ async function flush() {
   await flushing;
   // forget sessions that have gone quiet (their final state is already stored)
   const cutoff = Date.now() - 30 * 60e3;
-  for (const [id, r] of live) if (!dirty.has(id) && Date.parse(r.last_seen) < cutoff) live.delete(id);
+  for (const [id, r] of live) if (!dirty.has(id) && !geoBusy.has(id) && Date.parse(r.last_seen) < cutoff) { live.delete(id); meta.delete(id); }
 }
 setInterval(() => { flush(); }, FLUSH_MS).unref();
 for (const sig of ['SIGTERM', 'SIGINT']) {
@@ -537,81 +568,147 @@ function isAdmin(req) {
   return !!verify(parseCookies(req).mp_a, 'a');
 }
 
-const istDay = ms => new Date(ms + IST_MS).toISOString().slice(0, 10);
+// Periods are cut on Indian-time midnights. The comparison period is the same window shifted
+// back by the period's length (today so far vs yesterday up to the same time, and so on).
+const DAY = 86400e3;
+const istMidnight = t => Math.floor((t + IST_MS) / DAY) * DAY - IST_MS;
+const RANGES = {
+  today:     { label: 'Today',        days: 1,  bucket: 'hour', from: n => istMidnight(n),               to: n => n },
+  yesterday: { label: 'Yesterday',    days: 1,  bucket: 'hour', from: n => istMidnight(n) - DAY,         to: n => istMidnight(n) },
+  '7d':      { label: 'Last 7 days',  days: 7,  bucket: 'day',  from: n => istMidnight(n) - 6 * DAY,     to: n => n },
+  '30d':     { label: 'Last 30 days', days: 30, bucket: 'day',  from: n => istMidnight(n) - 29 * DAY,    to: n => n },
+  '90d':     { label: 'Last 90 days', days: 90, bucket: 'day',  from: n => istMidnight(n) - 89 * DAY,    to: n => n },
+  all:       { label: 'All time',     days: 0,  bucket: 'day',  from: () => Date.parse('2020-01-01T00:00:00Z'), to: n => n },
+};
+function rangeOf(key, now = Date.now()) {
+  const k = RANGES[key] ? key : '7d', R = RANGES[k];
+  const from = R.from(now), to = R.to(now), shift = R.days * DAY;
+  const iso = t => new Date(t).toISOString();
+  return { key: k, label: R.label, bucket: R.bucket, from: iso(from), to: iso(to),
+    prevFrom: shift ? iso(from - shift) : null, prevTo: shift ? iso(to - shift) : null };
+}
 
-async function adminStats(includeMe = false, yourIp = null) {
-  await flush();
-  const [visits, users] = await Promise.all([store.allVisits(), store.listUsers(), loadLabels()]);
-  const exclude = new Set(includeMe ? [] : [...LABELS].filter(([, l]) => l.owner).map(([id]) => id));
-  const tag = r => ({ ...r, owner: isOwner(r.visitor_id), label: (LABELS.get(r.visitor_id) || {}).name || null });
-  const now = Date.now();
-  const today = istDay(now), yesterday = istDay(now - 86400e3);
+const FALLBACK_MAX = 50000;      // before the SQL functions exist, stats come from the newest N visits
+// Every row the dashboard shows carries: is it you, its name, and a readable "came from".
+const cameOf = (r, ownHost) => stats.channelOf(r.source, stats.refHost(r.referrer), ownHost);
+const tagRow = (r, ownHost) => ({ ...r, owner: isOwner(r.visitor_id), label: (LABELS.get(r.visitor_id) || {}).name || null,
+  came: cameOf(r, ownHost) });
+const ownHostOf = req => { try { return new URL(publicOrigin(req)).host; } catch { return ''; } };
 
-  const byDay = new Map();               // day -> { visitors:Set, visits, secs }
-  const byVisitor = new Map();           // visitor_id -> summary
-  // `exclude` holds the owner's own browsers (marked on the admin page): they stay in the lists,
-  // tagged there, but are left out of every count and the chart.
-  const counted = exclude.size ? visits.filter(v => !exclude.has(v.visitor_id)) : visits;
-  for (const v of counted) {
-    const t = Date.parse(v.started_at), day = istDay(t);
-    let d = byDay.get(day);
-    if (!d) byDay.set(day, d = { visitors: new Set(), visits: 0, secs: 0 });
-    d.visitors.add(v.visitor_id); d.visits++; d.secs += v.duration_sec || 0;
+// Overview + first page of visitors for a period, from the database functions when available.
+async function periodStats(r, includeMe) {
+  const p = { from: r.from, to: r.to, prevFrom: r.prevFrom, prevTo: r.prevTo, includeMe, bucket: r.bucket };
+  try {
+    const [ov, list] = await Promise.all([store.overview(p), store.visitorList({ ...p, limit: 60, offset: 0 })]);
+    return { ov, list, engine: USE_SB ? 'database' : 'local', partial: false };
+  } catch (e) {
+    if (!(USE_SB && missingFn(e))) throw e;
+    const rows = await store.allVisits(FALLBACK_MAX), own = new Set(ownerIds());
+    return { ov: stats.overview(rows, own, p), list: stats.visitorList(rows, own, LABELS, { ...p, limit: 60, offset: 0 }),
+      engine: 'fallback', partial: rows.length >= FALLBACK_MAX, rows };
   }
-  for (const v of visits) {
-
-    let s = byVisitor.get(v.visitor_id);
-    if (!s) byVisitor.set(v.visitor_id, s = { visitor_id: v.visitor_id, visits: 0, total_sec: 0, first_seen: v.started_at,
-      last_seen: v.last_seen || v.started_at, name: null, email: null, city: v.city, region: v.region, country: v.country,
-      device: v.device, browser: v.browser, os: v.os, ip: v.ip, isp: v.isp, pages: new Set(), referrer: null });
-    s.visits++; s.total_sec += v.duration_sec || 0;
-    (v.pages || []).forEach(x => s.pages.add(x));
-    if (v.referrer) s.referrer = v.referrer;   // rows run newest-first, so this ends on the first referrer
-    if (v.started_at < s.first_seen) s.first_seen = v.started_at;
-    if ((v.last_seen || '') > s.last_seen) s.last_seen = v.last_seen;
-    if (v.user_name && !s.name) { s.name = v.user_name; s.email = v.user_email; }
+}
+async function moreVisitors(r, includeMe, offset, limit) {
+  const p = { from: r.from, to: r.to, includeMe, limit, offset };
+  try { return await store.visitorList(p); }
+  catch (e) {
+    if (!(USE_SB && missingFn(e))) throw e;
+    return stats.visitorList(await store.allVisits(FALLBACK_MAX), new Set(ownerIds()), LABELS, p);
   }
-  const dayStat = k => { const d = byDay.get(k); return { visitors: d ? d.visitors.size : 0, visits: d ? d.visits : 0 }; };
-  const uniqueSince = days => {
-    const set = new Set(); const from = istDay(now - (days - 1) * 86400e3);
-    for (const [k, d] of byDay) if (k >= from) d.visitors.forEach(x => set.add(x));
-    return set.size;
-  };
-  const daily = [];
-  for (let i = 29; i >= 0; i--) {
-    const k = istDay(now - i * 86400e3), d = byDay.get(k);
-    daily.push({ day: k, visitors: d ? d.visitors.size : 0, visits: d ? d.visits : 0, avg_sec: d && d.visits ? Math.round(d.secs / d.visits) : 0 });
-  }
-  const recent30 = counted.filter(v => Date.parse(v.started_at) > now - 30 * 86400e3 && (v.duration_sec || 0) > 0);
-  const avgSec = recent30.length ? Math.round(recent30.reduce((a, v) => a + v.duration_sec, 0) / recent30.length) : 0;
+}
 
-  const onlineNow = [...live.values()].filter(r => now - Date.parse(r.last_seen) < LIVE_WINDOW_MS)
-    .sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
-  const visitsByUser = new Map();
-  for (const v of visits) if (v.user_id != null) {
-    const s = visitsByUser.get(v.user_id) || { visits: 0, secs: 0 };
-    s.visits++; s.secs += v.duration_sec || 0; visitsByUser.set(v.user_id, s);
+// People on the site right now (pinged in the last 2 minutes), one entry per browser.
+function liveNow(includeMe, ownHost) {
+  const now = Date.now(), byVid = new Map();
+  for (const [sid, r] of live) {
+    if (now - Date.parse(r.last_seen) >= LIVE_WINDOW_MS || (!includeMe && isOwner(r.visitor_id))) continue;
+    const cur = byVid.get(r.visitor_id), tabs = (cur ? cur.tabs : 0) + 1;
+    if (!cur || r.started_at > cur.started_at) byVid.set(r.visitor_id, { ...tagRow(r, ownHost), first_visit: (meta.get(sid) || {}).first ?? null, tabs });
+    else cur.tabs = tabs;
   }
+  return [...byVid.values()].sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
+}
 
-  return {
-    storage: USE_SB ? 'supabase' : 'local-file',
-    generatedAt: new Date(now).toISOString(),
-    yourIp,
-    labelsError,
-    alerts: { telegram: tgReady() ? 'on' : TG_TOKEN ? 'no-chat' : 'off' },
-    kpi: {
-      onlineNow: new Set(onlineNow.filter(r => !exclude.has(r.visitor_id)).map(r => r.visitor_id)).size,   // people, not tabs
-      today: dayStat(today), yesterday: dayStat(yesterday),
-      last7: uniqueSince(7), last30: uniqueSince(30),
-      allTimeVisitors: [...byVisitor.keys()].filter(id => !exclude.has(id)).length, allTimeVisits: counted.length,
-      avgSec30: avgSec, registeredUsers: users.length,
-    },
-    daily,
-    online: onlineNow.slice(0, 100).map(tag),
-    recent: visits.slice(0, 200).map(tag),
-    visitors: [...byVisitor.values()].map(s => tag({ ...s, pages: [...s.pages] })).sort((a, b) => (a.last_seen < b.last_seen ? 1 : -1)).slice(0, 500),
-    users: users.map(u => ({ ...u, ...(visitsByUser.get(u.id) || { visits: 0, secs: 0 }) })),
-  };
+const statsCache = new Map();    // "range|includeMe" -> { at, data }; 15 s is plenty for a 30 s auto-refresh
+async function adminStats(rangeKey, includeMe, fresh, req) {
+  const r = rangeOf(rangeKey), key = r.key + '|' + includeMe, hit = statsCache.get(key);
+  let data = hit && !fresh && Date.now() - hit.at < 15e3 ? hit.data : null;
+  if (!data) {
+    await flush(); await loadLabels();
+    const ownHost = ownHostOf(req);
+    const [{ ov, list, engine, partial }, users, recent] = await Promise.all([
+      periodStats(r, includeMe), store.listUsers(),
+      store.visitsInRange({ from: r.from, to: r.to, owners: includeMe ? [] : ownerIds(), limit: 100 })]);
+    const perUser = new Map((ov.users || []).map(u => [u.user_id, u]));
+    data = {
+      storage: USE_SB ? 'supabase' : 'local-file', engine, partial, range: r,
+      kpi: { cur: ov.cur, prev: ov.prev, alltime: ov.alltime },
+      series: ov.series, channels: stats.channels(ov.sources || [], ownHost),
+      places: ov.places, devices: ov.devices, os: ov.os, sections: ov.sections,
+      visitors: list.map(v => ({ ...v, came: cameOf(v, ownHost) })), recent: recent.map(v => tagRow(v, ownHost)),
+      users: users.map(u => ({ ...u, visits: (perUser.get(u.id) || {}).visits || 0, secs: (perUser.get(u.id) || {}).secs || 0 })),
+      tracksSource: !USE_SB || hasSourceCol,
+    };
+    statsCache.set(key, { at: Date.now(), data });
+    if (statsCache.size > 40) statsCache.clear();
+  }
+  return { ...data, generatedAt: new Date().toISOString(), live: liveNow(includeMe, ownHostOf(req)), yourIp: clientIp(req),
+    owners: ownerIds().length, labelsError };
+}
+
+// ─────────── CSV downloads ───────────
+// Cells that start with = + - @ are prefixed with ' so a spreadsheet never runs visitor-supplied
+// text (a referrer, a name) as a formula.
+function csvCell(v) {
+  if (v == null) return '';
+  let s = Array.isArray(v) ? v.join(' ') : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+const istStamp = t => (t ? new Date(Date.parse(t) + IST_MS).toISOString().replace('T', ' ').slice(0, 19) : '');
+function sendCsv(res, filename, header, rows) {
+  const body = '\uFEFF' + [header, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';   // BOM: Excel reads UTF-8
+  res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${filename}"`,
+    'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.end(body);
+}
+async function handleExport(req, res, query) {
+  await flush(); await loadLabels();
+  const r = rangeOf(query.get('range')), includeMe = query.get('include_me') === '1', table = query.get('table');
+  const stamp = `${r.key}-${istStamp(new Date().toISOString()).slice(0, 10)}`;
+  const yes = b => (b ? 'yes' : 'no'), ownHost = ownHostOf(req);
+  if (table === 'visits') {
+    const rows = await store.visitsInRange({ from: r.from, to: r.to, owners: includeMe ? [] : ownerIds(), limit: 50000 });
+    return sendCsv(res, `marketpulse-visits-${stamp}.csv`,
+      ['Started (IST)', 'Last seen (IST)', 'Active seconds', 'Sections opened', 'Visitor ID', 'Visitor name', 'Your device',
+        'Came from', 'Link tag', 'Referrer', 'City', 'Region', 'Country', 'Internet provider', 'IP', 'Device', 'OS', 'Browser', 'Screen',
+        'Language', 'Time zone', 'Account name', 'Account email'],
+      rows.map(v => { const t = tagRow(v, ownHost); return [istStamp(v.started_at), istStamp(v.last_seen), v.duration_sec || 0, v.pages, v.visitor_id,
+        t.label, yes(t.owner), t.came.label, v.source, v.referrer, v.city, v.region, v.country, v.isp, v.ip, v.device, v.os, v.browser, v.screen,
+        v.lang, v.tz, v.user_name, v.user_email]; }));
+  }
+  if (table === 'visitors') {
+    const out = [];
+    for (let off = 0; off < 10000; off += 500) {
+      const page = await moreVisitors(r, includeMe, off, 500);
+      out.push(...page);
+      if (page.length < 500) break;
+    }
+    return sendCsv(res, `marketpulse-visitors-${stamp}.csv`,
+      ['Visitor ID', 'Name', 'Your device', 'Visits (all time)', 'Active time, seconds (all time)', 'First visit (IST)',
+        'Last seen (IST)', 'Last active in period (IST)', 'City', 'Region', 'Country', 'Internet provider', 'IP', 'Device', 'OS',
+        'Browser', 'Screen', 'First came from', 'First link tag', 'First referrer', 'Sections opened (all time)', 'Account name', 'Account email'],
+      out.map(v => [v.visitor_id, v.label, yes(v.owner), v.visits, v.total_sec, istStamp(v.first_seen), istStamp(v.last_seen),
+        istStamp(v.active_at), v.city, v.region, v.country, v.isp, v.ip, v.device, v.os, v.browser, v.screen, cameOf(v, ownHost).label, v.source, v.referrer,
+        v.pages, v.name, v.email]));
+  }
+  if (table === 'accounts') {
+    const s = await adminStats(r.key, includeMe, false, req);
+    return sendCsv(res, `marketpulse-accounts-${istStamp(new Date().toISOString()).slice(0, 10)}.csv`,
+      ['Name', 'Email', 'Signed up (IST)', 'Last sign-in (IST)', 'Visits (all time)', 'Active time, seconds (all time)'],
+      s.users.map(u => [u.name, u.email, istStamp(u.created_at), istStamp(u.last_login), u.visits, u.secs]));
+  }
+  return sendJson(res, 400, { error: 'Unknown table.' });
 }
 
 async function handleAdmin(req, res, action, query) {
@@ -627,37 +724,36 @@ async function handleAdmin(req, res, action, query) {
   }
   if (action === 'logout') return sendJson(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'mp_a', '', 0) });
   if (!isAdmin(req)) return sendJson(res, 401, { error: 'Sign in required.', passwordSet: !!ADMIN_PASSWORD });
-  ownerIps.set(clientIp(req), Date.now());
+  const fail = (e, what) => {
+    console.error(`[visitors] ${what} error:`, e.message);
+    return sendJson(res, 503, { error: 'Could not read the analytics store: ' + e.message });
+  };
+
+  if (action === 'stats') {
+    try { return sendJson(res, 200, await adminStats(query.get('range'), query.get('include_me') === '1', query.get('fresh') === '1', req)); }
+    catch (e) { return fail(e, 'stats'); }
+  }
+  if (action === 'visitors') {
+    const offset = Math.max(0, Math.min(100000, parseInt(query.get('offset'), 10) || 0));
+    try {
+      await loadLabels();
+      const list = await moreVisitors(rangeOf(query.get('range')), query.get('include_me') === '1', offset, 60), ownHost = ownHostOf(req);
+      return sendJson(res, 200, { visitors: list.map(x => ({ ...x, came: cameOf(x, ownHost) })) });
+    }
+    catch (e) { return fail(e, 'visitors'); }
+  }
+  if (action === 'export') {
+    try { return await handleExport(req, res, query); } catch (e) { return fail(e, 'export'); }
+  }
   if (action === 'label') {
     if (req.method !== 'POST') return sendJson(res, 405, { error: 'Use POST.' });
     let b; try { b = await readBody(req); } catch { return sendJson(res, 400, { error: 'Bad request.' }); }
     if (!ID_RE.test(b.visitor_id || '')) return sendJson(res, 400, { error: 'Bad visitor id.' });
     const patch = {};
     if (typeof b.owner === 'boolean') patch.owner = b.owner;
-    if (typeof b.name === 'string' || b.name === null) patch.name = b.name ? b.name.trim().slice(0, 40) || null : null;
+    if (typeof b.name === 'string' || b.name === null) patch.name = b.name ? b.name.replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, '').trim().slice(0, 40) || null : null;
     try { await setLabel(b.visitor_id, patch); return sendJson(res, 200, { ok: true }); }
     catch (e) { return sendJson(res, 503, { error: /visitor_labels|PGRST205|404/.test(e.message) ? 'The visitor_labels table is missing in Supabase. Re-run supabase-setup.sql.' : e.message }); }
-  }
-  if (action === 'alert-test') {
-    if (req.method !== 'POST') return sendJson(res, 405, { error: 'Use POST.' });
-    if (!tgReady()) return sendJson(res, 400, { error: 'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first.' });
-    try { await telegram('✅ <b>MarketPulse alerts are working.</b>\nYou will get a message like this whenever a new visitor arrives.'); return sendJson(res, 200, { ok: true }); }
-    catch (e) { return sendJson(res, 502, { error: 'Telegram said: ' + e.message }); }
-  }
-  if (action === 'telegram-chats') {
-    // Setup helper: after you send /start to your bot, this reveals your chat id to paste into TELEGRAM_CHAT_ID.
-    if (!TG_TOKEN) return sendJson(res, 400, { error: 'Set TELEGRAM_BOT_TOKEN first.' });
-    try {
-      const j = await (await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getUpdates`)).json();
-      if (!j.ok) return sendJson(res, 502, { error: 'Telegram said: ' + j.description });
-      const chats = new Map();
-      for (const u of j.result || []) { const c = (u.message || {}).chat; if (c && c.type === 'private') chats.set(c.id, { id: c.id, name: [c.first_name, c.last_name].filter(Boolean).join(' '), username: c.username || null }); }
-      return sendJson(res, 200, { chats: [...chats.values()] });
-    } catch (e) { return sendJson(res, 502, { error: e.message }); }
-  }
-  if (action === 'stats') {
-    try { return sendJson(res, 200, await adminStats(query.get('include_me') === '1', clientIp(req))); }
-    catch (e) { console.error('[visitors] stats error:', e.message); return sendJson(res, 503, { error: 'Could not read the analytics store: ' + e.message }); }
   }
   return sendJson(res, 404, { error: 'Not found.' });
 }
@@ -686,7 +782,6 @@ if (USE_SB) {
 }
 if (!USE_SB) console.log('[visitors] storage: local file .data/visitors.json (set SUPABASE_URL + SUPABASE_SERVICE_KEY for permanent storage)');
 if (!ADMIN_PASSWORD) console.log('[visitors] ADMIN_PASSWORD not set — /admin is open to localhost only');
-console.log(`[visitors] new-visitor alerts: ${tgReady() ? 'Telegram on' : TG_TOKEN ? 'Telegram token set, TELEGRAM_CHAT_ID missing' : 'off (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)'}`);
-knownVisitors().catch(() => {}); loadLabels();   // warm up so the first visitor after a restart is judged correctly
+loadLabels();
 
 module.exports = { handle, flush, parseUA, hashPassword, checkPassword, sign, verify };
