@@ -786,6 +786,15 @@ if (USE_SB) {
     : SB_KEY.startsWith('sb_publishable_') ? 'sb_publishable (WRONG — use the Secret key)'
     : SB_KEY.startsWith('eyJ') ? 'legacy JWT' : 'unrecognised format (re-copy the Secret key)';
   console.log(`[visitors] storage: Supabase ${SB_URL} · key type: ${kind} · length ${SB_KEY.length}`);
+
+  // Keep-alive: Supabase's free tier pauses a project after ~7 days without database activity.
+  // The uptime bot only keeps Render awake (bot hits are dropped before any write), so do one
+  // tiny read soon after boot and then every 12 hours.
+  const keepAlive = () => sb('visits?select=id&limit=1')
+    .then(() => console.log('[visitors] Supabase keep-alive ok'))
+    .catch(e => console.error('[visitors] Supabase keep-alive failed:', e.message));
+  setTimeout(keepAlive, 60e3).unref();
+  setInterval(keepAlive, 12 * 3600e3).unref();
 }
 if (!USE_SB) console.log('[visitors] storage: local file .data/visitors.json (set SUPABASE_URL + SUPABASE_SERVICE_KEY for permanent storage)');
 if (!ADMIN_PASSWORD) console.log('[visitors] ADMIN_PASSWORD not set — /admin is open to localhost only');
